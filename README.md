@@ -79,3 +79,20 @@ last 30 days versus the 30 days before that.
 ```sh
 npm test
 ```
+
+## Deploying to a Linux VM (Oracle Cloud, etc.)
+
+SSH into the server and run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/therealssorw/Artists-Hub-Discord-Bot/claude/daily-bot-stats-message-dlozpl/deploy/setup.sh | bash -s -- YOUR_DISCORD_TOKEN
+```
+
+This installs Node.js 20, clones the repo into `~/artists-hub-bot`, backfills 60 days of
+history, and runs the bot as the `artists-hub-bot` systemd service (auto-start on boot,
+restart on crash). Re-run the same command to update to the latest code.
+
+```sh
+journalctl -u artists-hub-bot -f        # live logs
+sudo systemctl restart artists-hub-bot  # restart
+```
