@@ -1,0 +1,22 @@
+{
+  "name": "artists-hub-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that tracks daily message activity and posts a stats report at midnight (America/New_York).",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "backfill": "node src/backfill.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "node-cron": "^4.6.0"
+  },
+  "license": "MIT"
+}
