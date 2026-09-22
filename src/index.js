@@ -2,12 +2,14 @@ import {
   ChannelType,
   Client,
   Events,
+  GatewayCloseCodes,
   GatewayIntentBits,
   MessageFlags,
   SlashCommandBuilder,
 } from 'discord.js';
 import cron from 'node-cron';
 
+import { bumpReminderCommand, setupBumpReminders } from './bump.js';
 import { config } from './config.js';
 import { StatsStore } from './db.js';
 import { buildReportEmbed } from './report.js';
@@ -16,9 +18,16 @@ import { dayKey, shiftDay, todayKey } from './time.js';
 
 const store = new StatsStore(config.databasePath);
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
-});
+/**
+ * Message Content is a privileged intent (toggle it on under Bot in the
+ * Developer Portal). It lets us read Disboard's "Bump done!" embed so failed
+ * bumps are ignored. If it is not enabled, Discord closes the connection with
+ * code 4014 and we reconnect without it; bump detection then treats every
+ * /bump reply as a success.
+ */
+const baseIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
+let client = createClient([...baseIntents, GatewayIntentBits.MessageContent]);
+let bumps;
 
 const statsCommand = new SlashCommandBuilder()
   .setName('stats')
@@ -43,14 +52,14 @@ function shouldCount(message) {
 }
 
 async function registerCommands() {
-  const commands = [statsCommand.toJSON()];
+  const commands = [statsCommand.toJSON(), bumpReminderCommand.toJSON()];
   if (config.guildId) {
     const guild = await client.guilds.fetch(config.guildId);
     await guild.commands.set(commands);
-    console.log(`Registered /stats in guild ${guild.name} (${guild.id}).`);
+    console.log(`Registered /stats and /bumpreminder in guild ${guild.name} (${guild.id}).`);
   } else {
     await client.application.commands.set(commands);
-    console.log('Registered /stats globally (may take up to an hour to appear).');
+    console.log('Registered /stats and /bumpreminder globally (may take up to an hour to appear).');
   }
 }
 
@@ -85,70 +94,115 @@ async function catchUpMissedReport() {
   }
 }
 
-client.once(Events.ClientReady, async (readyClient) => {
-  console.log(`Logged in as ${readyClient.user.tag}.`);
-  store.setTrackingSinceIfUnset(todayKey(config.timezone));
+function createClient(intents) {
+  const c = new Client({ intents });
+  bumps = setupBumpReminders(c, store);
+  registerHandlers(c);
+  return c;
+}
 
-  try {
-    await registerCommands();
-  } catch (error) {
-    console.error('Failed to register slash commands:', error);
-  }
+function registerHandlers(client) {
+  client.once(Events.ClientReady, async (readyClient) => {
+    console.log(`Logged in as ${readyClient.user.tag}.`);
+    store.setTrackingSinceIfUnset(todayKey(config.timezone));
 
-  // 12:00 AM every day in the configured timezone (America/New_York by default).
-  cron.schedule(
-    '0 0 * * *',
-    async () => {
-      // Report on the day that just ended, not the new day that just began.
-      const day = shiftDay(todayKey(config.timezone), -1);
+    try {
+      await registerCommands();
+    } catch (error) {
+      console.error('Failed to register slash commands:', error);
+    }
+
+    // 12:00 AM every day in the configured timezone (America/New_York by default).
+    cron.schedule(
+      '0 0 * * *',
+      async () => {
+        // Report on the day that just ended, not the new day that just began.
+        const day = shiftDay(todayKey(config.timezone), -1);
+        try {
+          await postDailyReport(day);
+        } catch (error) {
+          console.error(`Failed to post daily report for ${day}:`, error);
+        }
+      },
+      { timezone: config.timezone },
+    );
+    console.log(`Daily report scheduled for 00:00 ${config.timezone} in channel ${config.statsChannelId}.`);
+
+    bumps.restore();
+    await catchUpMissedReport();
+  });
+
+  client.on(Events.MessageCreate, (message) => {
+    try {
+      bumps.onMessage(message);
+    } catch (error) {
+      console.error('Failed to handle bump message:', error);
+    }
+    if (!shouldCount(message)) return;
+    try {
+      store.recordMessage(dayKey(message.createdAt, config.timezone), message.author.id);
+    } catch (error) {
+      console.error('Failed to record message:', error);
+    }
+  });
+
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === 'bumpreminder') {
       try {
-        await postDailyReport(day);
+        await bumps.onCommand(interaction);
       } catch (error) {
-        console.error(`Failed to post daily report for ${day}:`, error);
+        console.error('Failed to handle /bumpreminder:', error);
       }
-    },
-    { timezone: config.timezone },
-  );
-  console.log(`Daily report scheduled for 00:00 ${config.timezone} in channel ${config.statsChannelId}.`);
+      return;
+    }
 
-  await catchUpMissedReport();
-});
+    if (interaction.commandName !== 'stats') return;
 
-client.on(Events.MessageCreate, (message) => {
-  if (!shouldCount(message)) return;
-  try {
-    store.recordMessage(dayKey(message.createdAt, config.timezone), message.author.id);
-  } catch (error) {
-    console.error('Failed to record message:', error);
-  }
-});
+    const choice = interaction.options.getString('day') ?? 'today';
+    const today = todayKey(config.timezone);
+    const day = choice === 'yesterday' ? shiftDay(today, -1) : today;
 
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== 'stats') return;
+    try {
+      const stats = computeStats(store, day, config.windowDays);
+      const embed = buildReportEmbed(stats, {
+        partial: choice === 'today',
+        title: choice === 'today' ? '📊 Stats — Today so far' : undefined,
+      });
+      await interaction.reply({ embeds: [embed] });
+    } catch (error) {
+      console.error('Failed to handle /stats:', error);
+      const payload = {
+        content: 'Sorry, I could not compute the stats right now.',
+        flags: MessageFlags.Ephemeral,
+      };
+      if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
+      else await interaction.reply(payload);
+    }
+  });
 
-  const choice = interaction.options.getString('day') ?? 'today';
-  const today = todayKey(config.timezone);
-  const day = choice === 'yesterday' ? shiftDay(today, -1) : today;
-
-  try {
-    const stats = computeStats(store, day, config.windowDays);
-    const embed = buildReportEmbed(stats, {
-      partial: choice === 'today',
-      title: choice === 'today' ? '📊 Stats — Today so far' : undefined,
+  client.on(Events.ShardDisconnect, (event) => {
+    if (event.code !== GatewayCloseCodes.DisallowedIntents) return;
+    if (!client.options.intents.has(GatewayIntentBits.MessageContent)) {
+      console.error('Discord rejected the gateway intents; cannot continue.');
+      process.exit(1);
+    }
+    console.warn(
+      'Message Content intent is not enabled for this bot in the Discord Developer Portal. ' +
+        'Reconnecting without it; bump reminders will trigger on every /bump reply, including failed ones. ' +
+        'Enable it under Bot -> Privileged Gateway Intents for exact detection.',
+    );
+    client.destroy();
+    client = createClient(baseIntents);
+    client.login(config.token).catch((error) => {
+      console.error('Failed to log in without Message Content intent:', error);
+      process.exit(1);
     });
-    await interaction.reply({ embeds: [embed] });
-  } catch (error) {
-    console.error('Failed to handle /stats:', error);
-    const payload = {
-      content: 'Sorry, I could not compute the stats right now.',
-      flags: MessageFlags.Ephemeral,
-    };
-    if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
-    else await interaction.reply(payload);
-  }
-});
+  });
 
-client.on(Events.Error, (error) => console.error('Discord client error:', error));
+  client.on(Events.Error, (error) => console.error('Discord client error:', error));
+}
 
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);

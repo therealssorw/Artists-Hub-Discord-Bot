@@ -31,6 +31,17 @@ export class StatsStore {
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS bump_settings (
+        guild_id TEXT PRIMARY KEY,
+        role_id  TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS bump_reminders (
+        guild_id   TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        due_at     INTEGER NOT NULL
+      );
     `);
 
     this.stmts = {
@@ -57,6 +68,21 @@ export class StatsStore {
       wasReported: this.db.prepare('SELECT 1 FROM reports WHERE day = ?'),
       getMeta: this.db.prepare('SELECT value FROM meta WHERE key = ?'),
       setMeta: this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)'),
+      getBumpRole: this.db.prepare('SELECT role_id AS roleId FROM bump_settings WHERE guild_id = ?'),
+      setBumpRole: this.db.prepare(
+        'INSERT OR REPLACE INTO bump_settings (guild_id, role_id) VALUES (?, ?)',
+      ),
+      clearBumpRole: this.db.prepare('DELETE FROM bump_settings WHERE guild_id = ?'),
+      getBumpReminder: this.db.prepare(
+        'SELECT guild_id AS guildId, channel_id AS channelId, due_at AS dueAt FROM bump_reminders WHERE guild_id = ?',
+      ),
+      allBumpReminders: this.db.prepare(
+        'SELECT guild_id AS guildId, channel_id AS channelId, due_at AS dueAt FROM bump_reminders',
+      ),
+      setBumpReminder: this.db.prepare(
+        'INSERT OR REPLACE INTO bump_reminders (guild_id, channel_id, due_at) VALUES (?, ?, ?)',
+      ),
+      clearBumpReminder: this.db.prepare('DELETE FROM bump_reminders WHERE guild_id = ?'),
     };
   }
 
@@ -108,6 +134,38 @@ export class StatsStore {
 
   wasReported(day) {
     return Boolean(this.stmts.wasReported.get(day));
+  }
+
+  // ----- Disboard bump reminders -----
+
+  /** Role to ping when the server can be bumped again, or null if not set. */
+  getBumpRole(guildId) {
+    return this.stmts.getBumpRole.get(guildId)?.roleId ?? null;
+  }
+
+  setBumpRole(guildId, roleId) {
+    this.stmts.setBumpRole.run(guildId, roleId);
+  }
+
+  clearBumpRole(guildId) {
+    this.stmts.clearBumpRole.run(guildId);
+  }
+
+  /** Pending reminder for a guild: { guildId, channelId, dueAt } or null. */
+  getBumpReminder(guildId) {
+    return this.stmts.getBumpReminder.get(guildId) ?? null;
+  }
+
+  getAllBumpReminders() {
+    return this.stmts.allBumpReminders.all();
+  }
+
+  setBumpReminder(guildId, channelId, dueAt) {
+    this.stmts.setBumpReminder.run(guildId, channelId, dueAt);
+  }
+
+  clearBumpReminder(guildId) {
+    this.stmts.clearBumpReminder.run(guildId);
   }
 
   close() {

@@ -12,6 +12,16 @@ configured stats channel:
 
 The same report is available on demand with **`/stats`** (today so far, or yesterday).
 
+It also sends **Disboard bump reminders**: two hours after someone runs Disboard's `/bump`
+successfully, the bot pings a role of your choice in the same channel so the server gets
+bumped again as soon as the cooldown ends.
+
+- `/bumpreminder set role:@Role` – choose the role to ping (needs Manage Server)
+- `/bumpreminder status` – show the role and when the next reminder is due
+- `/bumpreminder disable` – turn reminders off
+
+Pending reminders are saved to the database, so a restart does not lose them.
+
 ## Setup
 
 1. Install Node.js 18.17 or newer.
@@ -30,7 +40,9 @@ The same report is available on demand with **`/stats`** (today so far, or yeste
 4. In the Discord Developer Portal, invite the bot with the `bot` and
    `applications.commands` scopes. It needs **View Channel** and **Read Message History**
    in the channels it should count, and **Send Messages** + **Embed Links** in the stats
-   channel. The privileged *Message Content* intent is **not** required.
+   channel. Under **Bot → Privileged Gateway Intents**, turn on **Message Content** so the
+   bot can read Disboard's "Bump done!" reply and ignore failed bumps. Without it the bot
+   still runs, but it reminds after every `/bump` attempt, including ones Disboard rejected.
 
 5. Start the bot:
 
@@ -53,7 +65,8 @@ bot messages, and overwrites the stored counts for those days. It is safe to run
 
 ## How it works
 
-- `src/index.js` – Discord client, the `/stats` command, and the midnight cron job.
+- `src/index.js` – Discord client, slash commands, and the midnight cron job.
+- `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
   If the bot was offline at midnight it posts the missed report on the next startup.
 - `src/db.js` – SQLite store (`data/stats.db`) with one row per day and user.
 - `src/stats.js` – computes the day totals, 30-day averages and growth.
