@@ -26,7 +26,7 @@ const store = new StatsStore(config.databasePath);
  * /bump reply as a success.
  */
 const baseIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
-let client = createClient([...baseIntents, GatewayIntentBits.MessageContent]);
+let client;
 let bumps;
 
 const statsCommand = new SlashCommandBuilder()
@@ -101,8 +101,8 @@ function createClient(intents) {
   return c;
 }
 
-function registerHandlers(client) {
-  client.once(Events.ClientReady, async (readyClient) => {
+function registerHandlers(c) {
+  c.once(Events.ClientReady, async (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}.`);
     store.setTrackingSinceIfUnset(todayKey(config.timezone));
 
@@ -132,7 +132,7 @@ function registerHandlers(client) {
     await catchUpMissedReport();
   });
 
-  client.on(Events.MessageCreate, (message) => {
+  c.on(Events.MessageCreate, (message) => {
     try {
       bumps.onMessage(message);
     } catch (error) {
@@ -146,7 +146,7 @@ function registerHandlers(client) {
     }
   });
 
-  client.on(Events.InteractionCreate, async (interaction) => {
+  c.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === 'bumpreminder') {
@@ -182,9 +182,9 @@ function registerHandlers(client) {
     }
   });
 
-  client.on(Events.ShardDisconnect, (event) => {
+  c.on(Events.ShardDisconnect, (event) => {
     if (event.code !== GatewayCloseCodes.DisallowedIntents) return;
-    if (!client.options.intents.has(GatewayIntentBits.MessageContent)) {
+    if (!c.options.intents.has(GatewayIntentBits.MessageContent)) {
       console.error('Discord rejected the gateway intents; cannot continue.');
       process.exit(1);
     }
@@ -193,7 +193,7 @@ function registerHandlers(client) {
         'Reconnecting without it; bump reminders will trigger on every /bump reply, including failed ones. ' +
         'Enable it under Bot -> Privileged Gateway Intents for exact detection.',
     );
-    client.destroy();
+    c.destroy();
     client = createClient(baseIntents);
     client.login(config.token).catch((error) => {
       console.error('Failed to log in without Message Content intent:', error);
@@ -201,7 +201,7 @@ function registerHandlers(client) {
     });
   });
 
-  client.on(Events.Error, (error) => console.error('Discord client error:', error));
+  c.on(Events.Error, (error) => console.error('Discord client error:', error));
 }
 
 function shutdown(signal) {
@@ -213,6 +213,7 @@ function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+client = createClient([...baseIntents, GatewayIntentBits.MessageContent]);
 client.login(config.token).catch((error) => {
   console.error('Failed to log in:', error);
   process.exit(1);
