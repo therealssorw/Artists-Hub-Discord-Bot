@@ -6,9 +6,8 @@ Every day at **12:00 AM America/New_York** (Eastern time, DST-aware) it posts to
 configured stats channel:
 
 - **Messages** sent that day
-- **Unique senders** that day
+- **Returning senders** and **new senders** that day (new = first message ever)
 - **Joined** and **left**: member count changes that day
-- **Started chatting**: members who sent their first ever message that day
 - The **30-day average** of both
 - **Growth** of those averages compared with the previous 30 days
 

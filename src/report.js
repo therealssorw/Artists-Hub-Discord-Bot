@@ -37,11 +37,15 @@ export function buildReportEmbed(stats, { title, partial = false } = {}) {
         inline: true,
       },
       {
-        name: partial ? '👥 Unique senders (so far today)' : '👥 Unique senders',
-        value: number.format(today.uniqueSenders),
+        name: partial ? '👥 Returning senders (so far today)' : '👥 Returning senders',
+        value: number.format(Math.max(0, today.uniqueSenders - members.firstTimeSenders)),
         inline: true,
       },
-      { name: '​', value: '​', inline: true },
+      {
+        name: partial ? '🆕 New senders (so far today)' : '🆕 New senders',
+        value: `${number.format(members.firstTimeSenders)}\n-# first message ever`,
+        inline: true,
+      },
       {
         name: partial ? '👋 Joined (so far today)' : '👋 Joined',
         value: number.format(members.joins),
@@ -52,16 +56,12 @@ export function buildReportEmbed(stats, { title, partial = false } = {}) {
         value: number.format(members.leaves),
         inline: true,
       },
-      {
-        name: partial ? '🗣️ Started chatting (so far today)' : '🗣️ Started chatting',
-        value: `${number.format(members.firstTimeSenders)}\n-# first message ever`,
-        inline: true,
-      },
+      { name: '​', value: '​', inline: true },
       {
         name: `📆 ${windowDays}-day average`,
         value:
           `**${decimal.format(window.avgMessages)}** messages / day\n` +
-          `**${decimal.format(window.avgUniqueSenders)}** unique senders / day`,
+          `**${decimal.format(window.avgUniqueSenders)}** unique senders / day\n-# returning + new`,
         inline: true,
       },
       {
