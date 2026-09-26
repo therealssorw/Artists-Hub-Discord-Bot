@@ -19,13 +19,16 @@ import { dayKey, shiftDay, todayKey } from './time.js';
 const store = new StatsStore(config.databasePath);
 
 /**
- * Message Content is a privileged intent (toggle it on under Bot in the
- * Developer Portal). It lets us read Disboard's "Bump done!" embed so failed
- * bumps are ignored. If it is not enabled, Discord closes the connection with
- * code 4014 and we reconnect without it; bump detection then treats every
- * /bump reply as a success.
+ * Two privileged intents are requested (toggle them on under Bot -> Privileged
+ * Gateway Intents in the Developer Portal):
+ *  - Server Members: needed to count joins and leaves.
+ *  - Message Content: lets us read Disboard's "Bump done!" embed so failed
+ *    bumps are ignored.
+ * If either is not enabled, Discord closes the connection with code 4014 and
+ * we reconnect with only the non-privileged intents so the bot keeps running.
  */
 const baseIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
+const privilegedIntents = [GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent];
 let client;
 let bumps;
 
@@ -182,21 +185,44 @@ function registerHandlers(c) {
     }
   });
 
+  c.on(Events.GuildMemberAdd, (member) => {
+    if (config.guildId && member.guild.id !== config.guildId) return;
+    if (member.user.bot) return;
+    try {
+      const now = new Date();
+      store.recordMemberEvent(dayKey(now, config.timezone), member.guild.id, member.id, 'join', now.getTime());
+    } catch (error) {
+      console.error('Failed to record member join:', error);
+    }
+  });
+
+  c.on(Events.GuildMemberRemove, (member) => {
+    if (config.guildId && member.guild.id !== config.guildId) return;
+    if (member.user?.bot) return;
+    try {
+      const now = new Date();
+      store.recordMemberEvent(dayKey(now, config.timezone), member.guild.id, member.id, 'leave', now.getTime());
+    } catch (error) {
+      console.error('Failed to record member leave:', error);
+    }
+  });
+
   c.on(Events.ShardDisconnect, (event) => {
     if (event.code !== GatewayCloseCodes.DisallowedIntents) return;
-    if (!c.options.intents.has(GatewayIntentBits.MessageContent)) {
+    if (!privilegedIntents.some((intent) => c.options.intents.has(intent))) {
       console.error('Discord rejected the gateway intents; cannot continue.');
       process.exit(1);
     }
     console.warn(
-      'Message Content intent is not enabled for this bot in the Discord Developer Portal. ' +
-        'Reconnecting without it; bump reminders will trigger on every /bump reply, including failed ones. ' +
-        'Enable it under Bot -> Privileged Gateway Intents for exact detection.',
+      'A privileged intent is not enabled for this bot in the Discord Developer Portal. ' +
+        'Reconnecting without Server Members and Message Content: joins/leaves will not be counted ' +
+        'and bump reminders will trigger on every /bump reply, including failed ones. ' +
+        'Enable both under Bot -> Privileged Gateway Intents, then restart the bot.',
     );
     c.destroy();
     client = createClient(baseIntents);
     client.login(config.token).catch((error) => {
-      console.error('Failed to log in without Message Content intent:', error);
+      console.error('Failed to log in without privileged intents:', error);
       process.exit(1);
     });
   });
@@ -213,7 +239,7 @@ function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-client = createClient([...baseIntents, GatewayIntentBits.MessageContent]);
+client = createClient([...baseIntents, ...privilegedIntents]);
 client.login(config.token).catch((error) => {
   console.error('Failed to log in:', error);
   process.exit(1);

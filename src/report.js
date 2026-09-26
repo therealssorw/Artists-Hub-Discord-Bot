@@ -25,7 +25,7 @@ function growthEmoji(pct) {
  *   `partial` marks the day as still in progress (used by /stats for "today").
  */
 export function buildReportEmbed(stats, { title, partial = false } = {}) {
-  const { today, window, previous, growth, windowDays } = stats;
+  const { today, members, window, previous, growth, windowDays } = stats;
 
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
@@ -42,6 +42,21 @@ export function buildReportEmbed(stats, { title, partial = false } = {}) {
         inline: true,
       },
       { name: '​', value: '​', inline: true },
+      {
+        name: partial ? '👋 Joined (so far today)' : '👋 Joined',
+        value: number.format(members.joins),
+        inline: true,
+      },
+      {
+        name: partial ? '🚪 Left (so far today)' : '🚪 Left',
+        value: number.format(members.leaves),
+        inline: true,
+      },
+      {
+        name: partial ? '🗣️ Started chatting (so far today)' : '🗣️ Started chatting',
+        value: `${number.format(members.firstTimeSenders)}\n-# first message ever`,
+        inline: true,
+      },
       {
         name: `📆 ${windowDays}-day average`,
         value:

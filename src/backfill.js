@@ -22,11 +22,16 @@ const fromDay = shiftDay(today, -(days - 1));
 const cutoffMs = Date.now() - days * 86_400_000 - 86_400_000; // one extra day of slack for tz offset
 
 const store = new StatsStore(config.databasePath);
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 /** counts[day][userId] = number of messages */
 const counts = {};
-for (let d = fromDay; d <= today; d = shiftDay(d, 1)) counts[d] = {};
+/** joins[day] = [{ guildId, userId, ts }] from each current member's join date */
+const joins = {};
+for (let d = fromDay; d <= today; d = shiftDay(d, 1)) {
+  counts[d] = {};
+  joins[d] = [];
+}
 
 let scanned = 0;
 
@@ -57,8 +62,28 @@ async function scanChannel(channel) {
   }
 }
 
+async function scanMembers(guild) {
+  let members;
+  try {
+    members = await guild.members.fetch();
+  } catch (error) {
+    console.warn(`  Could not list members (enable the Server Members intent to backfill joins): ${error.message}`);
+    return;
+  }
+  let found = 0;
+  for (const member of members.values()) {
+    if (member.user.bot || !member.joinedAt) continue;
+    const day = dayKey(member.joinedAt, config.timezone);
+    if (!joins[day]) continue;
+    joins[day].push({ guildId: guild.id, userId: member.id, ts: member.joinedTimestamp });
+    found += 1;
+  }
+  console.log(`  ${found} member join(s) in range (members who have since left are not visible).`);
+}
+
 async function scanGuild(guild) {
   console.log(`Scanning ${guild.name} (${guild.id})...`);
+  await scanMembers(guild);
   const channels = await guild.channels.fetch();
   const me = await guild.members.fetchMe();
 
@@ -104,6 +129,9 @@ client.once('clientReady', async () => {
 
     for (const [day, byUser] of Object.entries(counts)) {
       store.replaceDay(day, byUser);
+    }
+    for (const [day, list] of Object.entries(joins)) {
+      if (list.length) store.replaceJoins(day, list);
     }
     const existing = store.getTrackingSince();
     if (!existing || existing > fromDay) {

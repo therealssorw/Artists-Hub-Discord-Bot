@@ -82,3 +82,24 @@ test('percentChange and formatGrowth', () => {
   assert.equal(formatGrowth(0), '±0%');
   assert.equal(formatGrowth(null), 'n/a (no prior data)');
 });
+
+test('member joins, leaves and first-time senders are reported per day', () => {
+  const store = new StatsStore(':memory:');
+  const day = '2026-09-25';
+  store.recordMemberEvent(day, 'g', 'u1', 'join', 1);
+  store.recordMemberEvent(day, 'g', 'u2', 'join', 2);
+  store.recordMemberEvent(day, 'g', 'u3', 'leave', 3);
+  store.recordMemberEvent(shiftDay(day, -1), 'g', 'u4', 'join', 4);
+  // u1 first message today, u5 messaged yesterday and today (not first-time today)
+  store.recordMessage(day, 'u1');
+  store.recordMessage(day, 'u5');
+  store.recordMessage(shiftDay(day, -1), 'u5');
+
+  const stats = computeStats(store, day, 30);
+  assert.deepEqual(stats.members, { joins: 2, leaves: 1, firstTimeSenders: 1 });
+
+  // Backfill replaces joins for a day without touching leaves.
+  store.replaceJoins(day, [{ guildId: 'g', userId: 'u9', ts: 9 }]);
+  assert.deepEqual(store.getMemberEvents(day), { joins: 1, leaves: 1 });
+  store.close();
+});

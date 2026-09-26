@@ -32,6 +32,16 @@ export class StatsStore {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS member_events (
+        day      TEXT    NOT NULL,
+        guild_id TEXT    NOT NULL,
+        user_id  TEXT    NOT NULL,
+        kind     TEXT    NOT NULL CHECK (kind IN ('join', 'leave')),
+        ts       INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id, kind, ts)
+      );
+      CREATE INDEX IF NOT EXISTS idx_member_events_day ON member_events (day);
+
       CREATE TABLE IF NOT EXISTS bump_settings (
         guild_id TEXT PRIMARY KEY,
         role_id  TEXT NOT NULL
@@ -61,6 +71,21 @@ export class StatsStore {
         ORDER BY day
       `),
       clearDay: this.db.prepare('DELETE FROM daily_user_messages WHERE day = ?'),
+      firstTimeSenders: this.db.prepare(`
+        SELECT COUNT(*) AS count FROM (
+          SELECT user_id, MIN(day) AS first_day FROM daily_user_messages GROUP BY user_id
+        ) WHERE first_day = ?
+      `),
+      addMemberEvent: this.db.prepare(`
+        INSERT OR IGNORE INTO member_events (day, guild_id, user_id, kind, ts) VALUES (?, ?, ?, ?, ?)
+      `),
+      memberEventCounts: this.db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN kind = 'join'  THEN 1 ELSE 0 END), 0) AS joins,
+          COALESCE(SUM(CASE WHEN kind = 'leave' THEN 1 ELSE 0 END), 0) AS leaves
+        FROM member_events WHERE day = ?
+      `),
+      clearJoinsForDay: this.db.prepare("DELETE FROM member_events WHERE day = ? AND kind = 'join'"),
       firstDay: this.db.prepare('SELECT MIN(day) AS day FROM daily_user_messages'),
       markReported: this.db.prepare(
         'INSERT OR REPLACE INTO reports (day, posted_at) VALUES (?, ?)',
@@ -97,6 +122,32 @@ export class StatsStore {
       this.stmts.clearDay.run(day);
       for (const [userId, count] of Object.entries(countsByUser)) {
         this.stmts.increment.run(day, userId, count);
+      }
+    });
+    tx();
+  }
+
+  /** Number of users whose first recorded message was on `day`. */
+  getFirstTimeSenders(day) {
+    return this.stmts.firstTimeSenders.get(day).count;
+  }
+
+  /** Record a member joining or leaving. `kind` is 'join' or 'leave'. */
+  recordMemberEvent(day, guildId, userId, kind, ts = Date.now()) {
+    this.stmts.addMemberEvent.run(day, guildId, userId, kind, ts);
+  }
+
+  /** { joins, leaves } for a single day. */
+  getMemberEvents(day) {
+    return this.stmts.memberEventCounts.get(day);
+  }
+
+  /** Replace recorded joins for a day (used by backfill from member join dates). */
+  replaceJoins(day, joins) {
+    const tx = this.db.transaction(() => {
+      this.stmts.clearJoinsForDay.run(day);
+      for (const { guildId, userId, ts } of joins) {
+        this.stmts.addMemberEvent.run(day, guildId, userId, 'join', ts);
       }
     });
     tx();

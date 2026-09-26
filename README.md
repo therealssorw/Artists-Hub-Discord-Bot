@@ -7,6 +7,8 @@ configured stats channel:
 
 - **Messages** sent that day
 - **Unique senders** that day
+- **Joined** and **left**: member count changes that day
+- **Started chatting**: members who sent their first ever message that day
 - The **30-day average** of both
 - **Growth** of those averages compared with the previous 30 days
 
@@ -40,9 +42,10 @@ Pending reminders are saved to the database, so a restart does not lose them.
 4. In the Discord Developer Portal, invite the bot with the `bot` and
    `applications.commands` scopes. It needs **View Channel** and **Read Message History**
    in the channels it should count, and **Send Messages** + **Embed Links** in the stats
-   channel. Under **Bot → Privileged Gateway Intents**, turn on **Message Content** so the
-   bot can read Disboard's "Bump done!" reply and ignore failed bumps. Without it the bot
-   still runs, but it reminds after every `/bump` attempt, including ones Disboard rejected.
+   channel. Under **Bot → Privileged Gateway Intents**, turn on both **Server Members**
+   (needed to count joins and leaves) and **Message Content** (lets the bot read Disboard's
+   "Bump done!" reply and ignore failed bumps). Without them the bot still runs, but joins and
+   leaves stay at zero and it reminds after every `/bump` attempt, including rejected ones.
 
 5. Start the bot:
 
@@ -61,7 +64,9 @@ npm run backfill -- 90    # or any number of days
 ```
 
 The script scans every text/announcement channel and public thread the bot can read, ignoring
-bot messages, and overwrites the stored counts for those days. It is safe to run again later.
+bot messages, and overwrites the stored counts for those days. It also records joins from each
+current member's join date (members who already left cannot be recovered; leaves are only
+tracked live). It is safe to run again later.
 
 ## How it works
 

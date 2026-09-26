@@ -59,6 +59,10 @@ export function computeStats(store, day, windowDays = 30) {
     windowDays,
     trackingSince,
     today: store.getDay(day),
+    members: {
+      ...store.getMemberEvents(day),
+      firstTimeSenders: store.getFirstTimeSenders(day),
+    },
     window,
     previous,
     growth: {
