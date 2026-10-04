@@ -15,7 +15,8 @@ export function escapeName(name) {
 }
 
 /** The line posted for one arrival. */
-export function formatArrival({ name, here }) {
+export function formatArrival({ name, here, text }) {
+  if (typeof text === 'string' && text.trim()) return text.trim();
   const who = `**${escapeName(name)}** set out into the dungeon`;
   return here > 1 ? `${who} · ${here} adventuring now` : who;
 }

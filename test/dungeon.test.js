@@ -13,6 +13,10 @@ test('an arrival line names the character and the crowd', () => {
   assert.equal(formatArrival({ name: 'Ototoxic', here: 3 }), '**Ototoxic** set out into the dungeon · 3 adventuring now');
 });
 
+test('a line written by the server is posted as it is', () => {
+  assert.equal(formatArrival({ name: 'x', here: 1, text: '**Ototoxic** set out into the dungeon · 2 adventuring now' }), '**Ototoxic** set out into the dungeon · 2 adventuring now');
+});
+
 test('polling announces each arrival since the last check', async () => {
   const sent = [];
   const channel = { isTextBased: () => true, type: 0, send: async (m) => sent.push(m.content) };
