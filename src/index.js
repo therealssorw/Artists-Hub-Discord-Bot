@@ -12,6 +12,7 @@ import cron from 'node-cron';
 import { bumpReminderCommand, setupBumpReminders } from './bump.js';
 import { config } from './config.js';
 import { StatsStore } from './db.js';
+import { setupDungeonArrivals } from './dungeon.js';
 import { buildReportEmbed } from './report.js';
 import { computeStats } from './stats.js';
 import { dayKey, shiftDay, todayKey } from './time.js';
@@ -31,6 +32,7 @@ const baseIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages];
 const privilegedIntents = [GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent];
 let client;
 let bumps;
+let dungeon;
 
 const statsCommand = new SlashCommandBuilder()
   .setName('stats')
@@ -100,6 +102,8 @@ async function catchUpMissedReport() {
 function createClient(intents) {
   const c = new Client({ intents });
   bumps = setupBumpReminders(c, store);
+  dungeon?.stop();
+  dungeon = setupDungeonArrivals(c);
   registerHandlers(c);
   return c;
 }
@@ -132,6 +136,7 @@ function registerHandlers(c) {
     console.log(`Daily report scheduled for 00:00 ${config.timezone} in channel ${config.statsChannelId}.`);
 
     bumps.restore();
+    dungeon.start();
     await catchUpMissedReport();
   });
 
@@ -232,6 +237,7 @@ function registerHandlers(c) {
 
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
+  dungeon?.stop();
   client.destroy();
   store.close();
   process.exit(0);
