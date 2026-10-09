@@ -13,7 +13,9 @@
     "node": ">=18.17"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.10",
     "better-sqlite3": "^11.7.0",
+    "dejavu-fonts-ttf": "^2.37.3",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.7",
     "node-cron": "^4.6.0"

@@ -21,6 +21,18 @@ export const config = {
   dungeonSecret: process.env.DUNGEON_SECRET || null,
   dungeonChannelId: process.env.DUNGEON_CHANNEL_ID || '1555979173917499432',
   dungeonPollMs: Number(process.env.DUNGEON_POLL_MS) || 15000,
+  /** Member counts that trigger a milestone snapshot, smallest first. */
+  milestones: (process.env.MILESTONES || '100')
+    .split(',')
+    .map((n) => Number(n.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .sort((a, b) => a - b),
+  /** Where milestone snapshots go (default: the stats channel). */
+  get milestoneChannelId() {
+    return process.env.MILESTONE_CHANNEL_ID || this.statsChannelId;
+  },
+  /** Who to ping at a milestone (default: the server owner). */
+  milestoneUserId: process.env.MILESTONE_USER_ID || null,
   /** Number of days in the rolling window used for averages and growth. */
   windowDays: 30,
 };

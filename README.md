@@ -51,6 +51,21 @@ roles and `@everyone`/`@here` need the **Mention @everyone** permission.
 Reminders survive restarts; any that came due while the bot was offline are sent on startup,
 marked late.
 
+## Member milestones
+
+When the server reaches **100 members**, the bot posts a snapshot image of the moment in the
+stats channel and pings the server owner. The image shows the server icon and name, the count,
+when it happened, the member who tipped it over and the latest arrivals. Each milestone is
+announced once, even if people leave and rejoin around it. If the bot was offline when the
+count was reached, it posts on its next startup.
+
+- `/milestone preview` – see the image now, plus how many members are left (only you see it;
+  needs Manage Server)
+
+Change the milestones, channel or who gets pinged with `MILESTONES` (for example
+`100,250,500`), `MILESTONE_CHANNEL_ID` and `MILESTONE_USER_ID` in `.env`. Counting new members
+needs the **Server Members** intent (see Setup).
+
 ## Setup
 
 1. Install Node.js 18.17 or newer.
@@ -69,7 +84,7 @@ marked late.
 4. In the Discord Developer Portal, invite the bot with the `bot` and
    `applications.commands` scopes. It needs **View Channel** and **Read Message History**
    in the channels it should count, and **Send Messages** + **Embed Links** in the stats
-   channel. Under **Bot → Privileged Gateway Intents**, turn on both **Server Members**
+   channel (plus **Attach Files** for milestone snapshots). Under **Bot → Privileged Gateway Intents**, turn on both **Server Members**
    (needed to count joins and leaves) and **Message Content** (lets the bot read Disboard's
    "Bump done!" reply and ignore failed bumps). Without them the bot still runs, but joins and
    leaves stay at zero and it reminds after every `/bump` attempt, including rejected ones.
@@ -99,6 +114,7 @@ tracked live). It is safe to run again later.
 
 - `src/index.js` – Discord client, slash commands, and the midnight cron job.
 - `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
+- `src/milestone.js` – member milestone snapshots and `/milestone preview`.
 - `src/reminders.js` – the `/remind` and `/reminders` commands; `src/when.js` parses their times.
   If the bot was offline at midnight it posts the missed report on the next startup.
 - `src/db.js` – SQLite store (`data/stats.db`) with one row per day and user.
@@ -119,6 +135,9 @@ last 30 days versus the 30 days before that.
 | `GUILD_ID`         | –                       | Register commands and count messages only in this server  |
 | `DATABASE_PATH`    | `./data/stats.db`       | SQLite file location                                      |
 | `TIMEZONE`         | `America/New_York`      | Day boundaries, report time and `/remind` clock times     |
+| `MILESTONES`       | `100`                   | Member counts that trigger a snapshot (comma separated)   |
+| `MILESTONE_CHANNEL_ID` | `STATS_CHANNEL_ID`  | Channel for milestone snapshots                           |
+| `MILESTONE_USER_ID`    | server owner        | Who to ping at a milestone                                |
 
 ## Tests
 

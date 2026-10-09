@@ -14,6 +14,7 @@ import { config } from './config.js';
 import { StatsStore } from './db.js';
 import { setupDungeonArrivals } from './dungeon.js';
 import { buildReportEmbed } from './report.js';
+import { milestoneCommand, setupMilestones } from './milestone.js';
 import { remindCommand, remindersCommand, setupReminders } from './reminders.js';
 import { computeStats } from './stats.js';
 import { dayKey, shiftDay, todayKey } from './time.js';
@@ -35,6 +36,7 @@ let client;
 let bumps;
 let dungeon;
 let reminders;
+let milestones;
 
 const statsCommand = new SlashCommandBuilder()
   .setName('stats')
@@ -59,7 +61,9 @@ function shouldCount(message) {
 }
 
 async function registerCommands() {
-  const commands = [statsCommand, bumpReminderCommand, remindCommand, remindersCommand].map((c) => c.toJSON());
+  const commands = [statsCommand, bumpReminderCommand, remindCommand, remindersCommand, milestoneCommand].map((c) =>
+    c.toJSON(),
+  );
   const names = commands.map((c) => `/${c.name}`).join(', ');
   if (config.guildId) {
     const guild = await client.guilds.fetch(config.guildId);
@@ -109,6 +113,7 @@ function createClient(intents) {
   dungeon = setupDungeonArrivals(c);
   reminders?.stop();
   reminders = setupReminders(c, store);
+  milestones = setupMilestones(c, store);
   registerHandlers(c);
   return c;
 }
@@ -142,6 +147,7 @@ function registerHandlers(c) {
 
     bumps.restore();
     reminders.restore();
+    milestones.checkAll().catch((error) => console.error('Failed to check member milestones:', error));
     dungeon.start();
     await catchUpMissedReport();
   });
@@ -186,6 +192,16 @@ function registerHandlers(c) {
       return;
     }
 
+    if (interaction.commandName === 'milestone') {
+      try {
+        await milestones.onCommand(interaction);
+      } catch (error) {
+        console.error('Failed to handle /milestone:', error);
+        await interaction.editReply('Sorry, I could not render the milestone preview.').catch(() => {});
+      }
+      return;
+    }
+
     if (interaction.commandName === 'bumpreminder') {
       try {
         await bumps.onCommand(interaction);
@@ -220,6 +236,7 @@ function registerHandlers(c) {
   });
 
   c.on(Events.GuildMemberAdd, (member) => {
+    milestones.onMemberAdd(member).catch((error) => console.error('Failed to check member milestones:', error));
     if (config.guildId && member.guild.id !== config.guildId) return;
     if (member.user.bot) return;
     try {

@@ -115,6 +115,7 @@ export class StatsStore {
       wasReported: this.db.prepare('SELECT 1 FROM reports WHERE day = ?'),
       getMeta: this.db.prepare('SELECT value FROM meta WHERE key = ?'),
       setMeta: this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)'),
+      deleteMeta: this.db.prepare('DELETE FROM meta WHERE key = ?'),
       getBumpRole: this.db.prepare('SELECT role_id AS roleId FROM bump_settings WHERE guild_id = ?'),
       setBumpRole: this.db.prepare(
         'INSERT OR REPLACE INTO bump_settings (guild_id, role_id) VALUES (?, ?)',
@@ -213,6 +214,18 @@ export class StatsStore {
     if (!this.getTrackingSince()) {
       this.stmts.setMeta.run('tracking_since', day);
     }
+  }
+
+  getMeta(key) {
+    return this.stmts.getMeta.get(key)?.value ?? null;
+  }
+
+  setMeta(key, value) {
+    this.stmts.setMeta.run(key, value);
+  }
+
+  deleteMeta(key) {
+    this.stmts.deleteMeta.run(key);
   }
 
   markReported(day, postedAt = new Date()) {
