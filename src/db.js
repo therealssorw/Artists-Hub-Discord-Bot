@@ -2,6 +2,15 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 
+const REMINDER_COLUMNS = `
+  id, guild_id AS guildId, channel_id AS channelId, creator_id AS creatorId, message, pings,
+  due_at AS dueAt, repeat, created_at AS createdAt
+`;
+
+function toReminder(row) {
+  return { ...row, pings: JSON.parse(row.pings) };
+}
+
 /**
  * Storage for per-day, per-user message counts. Unique senders for a day are
  * simply the number of rows for that day; messages are the sum of `count`.
@@ -52,6 +61,19 @@ export class StatsStore {
         channel_id TEXT NOT NULL,
         due_at     INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS reminders (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id   TEXT    NOT NULL,
+        channel_id TEXT    NOT NULL,
+        creator_id TEXT    NOT NULL,
+        message    TEXT    NOT NULL,
+        pings      TEXT    NOT NULL, -- JSON { users: [], roles: [], everyone: null | 'everyone' | 'here' }
+        due_at     INTEGER NOT NULL,
+        repeat     TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_reminders_guild ON reminders (guild_id, creator_id);
     `);
 
     this.stmts = {
@@ -108,6 +130,20 @@ export class StatsStore {
         'INSERT OR REPLACE INTO bump_reminders (guild_id, channel_id, due_at) VALUES (?, ?, ?)',
       ),
       clearBumpReminder: this.db.prepare('DELETE FROM bump_reminders WHERE guild_id = ?'),
+      addReminder: this.db.prepare(`
+        INSERT INTO reminders (guild_id, channel_id, creator_id, message, pings, due_at, repeat, created_at)
+        VALUES (@guildId, @channelId, @creatorId, @message, @pings, @dueAt, @repeat, @createdAt)
+      `),
+      getReminder: this.db.prepare(`SELECT ${REMINDER_COLUMNS} FROM reminders WHERE id = ?`),
+      allReminders: this.db.prepare(`SELECT ${REMINDER_COLUMNS} FROM reminders ORDER BY due_at`),
+      guildReminders: this.db.prepare(
+        `SELECT ${REMINDER_COLUMNS} FROM reminders WHERE guild_id = ? ORDER BY due_at`,
+      ),
+      userReminders: this.db.prepare(
+        `SELECT ${REMINDER_COLUMNS} FROM reminders WHERE guild_id = ? AND creator_id = ? ORDER BY due_at`,
+      ),
+      rescheduleReminder: this.db.prepare('UPDATE reminders SET due_at = ? WHERE id = ?'),
+      deleteReminder: this.db.prepare('DELETE FROM reminders WHERE id = ?'),
     };
   }
 
@@ -217,6 +253,48 @@ export class StatsStore {
 
   clearBumpReminder(guildId) {
     this.stmts.clearBumpReminder.run(guildId);
+  }
+
+  // ----- /remind reminders -----
+
+  /** Save a reminder and return its id. `pings` is { users, roles, everyone }. */
+  addReminder({ guildId, channelId, creatorId, message, pings, dueAt, repeat = null, createdAt = Date.now() }) {
+    const info = this.stmts.addReminder.run({
+      guildId,
+      channelId,
+      creatorId,
+      message,
+      pings: JSON.stringify(pings),
+      dueAt,
+      repeat,
+      createdAt,
+    });
+    return Number(info.lastInsertRowid);
+  }
+
+  getReminder(id) {
+    const row = this.stmts.getReminder.get(id);
+    return row ? toReminder(row) : null;
+  }
+
+  getAllReminders() {
+    return this.stmts.allReminders.all().map(toReminder);
+  }
+
+  /** Pending reminders in a guild, soonest first; only `creatorId`'s if given. */
+  listReminders(guildId, creatorId = null) {
+    const rows = creatorId
+      ? this.stmts.userReminders.all(guildId, creatorId)
+      : this.stmts.guildReminders.all(guildId);
+    return rows.map(toReminder);
+  }
+
+  rescheduleReminder(id, dueAt) {
+    this.stmts.rescheduleReminder.run(dueAt, id);
+  }
+
+  deleteReminder(id) {
+    return this.stmts.deleteReminder.run(id).changes > 0;
   }
 
   close() {

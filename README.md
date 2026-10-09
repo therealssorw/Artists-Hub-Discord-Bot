@@ -23,6 +23,34 @@ bumped again as soon as the cooldown ends.
 
 Pending reminders are saved to the database, so a restart does not lose them.
 
+## Reminders
+
+**`/remind`** posts a message at a set time and pings whoever you choose:
+
+```
+/remind time:2h30m message:Art stream starts! ping:@Stream Viewers
+/remind time:fri 5pm message:Submit your pieces ping:@alice ping2:@bob channel:#events
+/remind time:tomorrow 9am message:Daily sketch prompt ping:@Sketchers repeat:Every day
+```
+
+- **time**: a duration (`10m`, `45 secs`, `2h30m`, `1.5h`, `3d`, `1w`, `2mo`) or a clock time
+  in `TIMEZONE` (`3pm`, `15:30`, `noon`, `tonight`, `tomorrow 9am`, `fri 5:30pm`, `next tue`,
+  `oct 12 3pm`, `12/25 8am`, `2026-12-25 08:00`). While typing, the box previews the exact
+  time it understood. A day without a time means 9 AM.
+- **message**: the reminder text. @mentions written in it are pinged too.
+- **ping** … **ping5**: people or roles to ping. With none, it pings you.
+- **channel**: where to post (default: the current channel).
+- **repeat**: every hour, day, weekday (Mon–Fri) or week.
+
+Role pings follow Discord's rules: anyone can ping a mentionable role, while non-mentionable
+roles and `@everyone`/`@here` need the **Mention @everyone** permission.
+
+- `/reminders list` – your pending reminders (moderators with Manage Messages see all)
+- `/reminders cancel id:12` – cancel one of yours (moderators can cancel any)
+
+Reminders survive restarts; any that came due while the bot was offline are sent on startup,
+marked late.
+
 ## Setup
 
 1. Install Node.js 18.17 or newer.
@@ -71,6 +99,7 @@ tracked live). It is safe to run again later.
 
 - `src/index.js` – Discord client, slash commands, and the midnight cron job.
 - `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
+- `src/reminders.js` – the `/remind` and `/reminders` commands; `src/when.js` parses their times.
   If the bot was offline at midnight it posts the missed report on the next startup.
 - `src/db.js` – SQLite store (`data/stats.db`) with one row per day and user.
 - `src/stats.js` – computes the day totals, 30-day averages and growth.
@@ -87,9 +116,9 @@ last 30 days versus the 30 days before that.
 | ------------------ | ----------------------- | --------------------------------------------------------- |
 | `DISCORD_TOKEN`    | –                       | Bot token (required)                                      |
 | `STATS_CHANNEL_ID` | `1548706786893238322`   | Channel that receives the daily report                    |
-| `GUILD_ID`         | –                       | Register `/stats` and count messages only in this server  |
+| `GUILD_ID`         | –                       | Register commands and count messages only in this server  |
 | `DATABASE_PATH`    | `./data/stats.db`       | SQLite file location                                      |
-| `TIMEZONE`         | `America/New_York`      | Day boundaries and report time                            |
+| `TIMEZONE`         | `America/New_York`      | Day boundaries, report time and `/remind` clock times     |
 
 ## Tests
 

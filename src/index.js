@@ -14,6 +14,7 @@ import { config } from './config.js';
 import { StatsStore } from './db.js';
 import { setupDungeonArrivals } from './dungeon.js';
 import { buildReportEmbed } from './report.js';
+import { remindCommand, remindersCommand, setupReminders } from './reminders.js';
 import { computeStats } from './stats.js';
 import { dayKey, shiftDay, todayKey } from './time.js';
 
@@ -33,6 +34,7 @@ const privilegedIntents = [GatewayIntentBits.GuildMembers, GatewayIntentBits.Mes
 let client;
 let bumps;
 let dungeon;
+let reminders;
 
 const statsCommand = new SlashCommandBuilder()
   .setName('stats')
@@ -57,14 +59,15 @@ function shouldCount(message) {
 }
 
 async function registerCommands() {
-  const commands = [statsCommand.toJSON(), bumpReminderCommand.toJSON()];
+  const commands = [statsCommand, bumpReminderCommand, remindCommand, remindersCommand].map((c) => c.toJSON());
+  const names = commands.map((c) => `/${c.name}`).join(', ');
   if (config.guildId) {
     const guild = await client.guilds.fetch(config.guildId);
     await guild.commands.set(commands);
-    console.log(`Registered /stats and /bumpreminder in guild ${guild.name} (${guild.id}).`);
+    console.log(`Registered ${names} in guild ${guild.name} (${guild.id}).`);
   } else {
     await client.application.commands.set(commands);
-    console.log('Registered /stats and /bumpreminder globally (may take up to an hour to appear).');
+    console.log(`Registered ${names} globally (may take up to an hour to appear).`);
   }
 }
 
@@ -104,6 +107,8 @@ function createClient(intents) {
   bumps = setupBumpReminders(c, store);
   dungeon?.stop();
   dungeon = setupDungeonArrivals(c);
+  reminders?.stop();
+  reminders = setupReminders(c, store);
   registerHandlers(c);
   return c;
 }
@@ -136,6 +141,7 @@ function registerHandlers(c) {
     console.log(`Daily report scheduled for 00:00 ${config.timezone} in channel ${config.statsChannelId}.`);
 
     bumps.restore();
+    reminders.restore();
     dungeon.start();
     await catchUpMissedReport();
   });
@@ -155,7 +161,30 @@ function registerHandlers(c) {
   });
 
   c.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName !== 'remind' && interaction.commandName !== 'reminders') return;
+      try {
+        await reminders.onAutocomplete(interaction);
+      } catch (error) {
+        console.error(`Failed to autocomplete /${interaction.commandName}:`, error);
+      }
+      return;
+    }
     if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === 'remind' || interaction.commandName === 'reminders') {
+      try {
+        await reminders.onCommand(interaction);
+      } catch (error) {
+        console.error(`Failed to handle /${interaction.commandName}:`, error);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction
+            .reply({ content: 'Sorry, something went wrong with that reminder.', flags: MessageFlags.Ephemeral })
+            .catch(() => {});
+        }
+      }
+      return;
+    }
 
     if (interaction.commandName === 'bumpreminder') {
       try {
@@ -238,6 +267,7 @@ function registerHandlers(c) {
 function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
   dungeon?.stop();
+  reminders?.stop();
   client.destroy();
   store.close();
   process.exit(0);
