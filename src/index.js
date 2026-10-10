@@ -13,6 +13,7 @@ import { bumpReminderCommand, setupBumpReminders } from './bump.js';
 import { config } from './config.js';
 import { StatsStore } from './db.js';
 import { setupDungeonArrivals } from './dungeon.js';
+import { leaderboardCommand, levelsCommand, rankCommand, setupLevels } from './levels.js';
 import { setupLinkGate } from './links.js';
 import { buildReportEmbed } from './report.js';
 import { milestoneCommand, setupMilestones } from './milestone.js';
@@ -39,6 +40,7 @@ let bumps;
 let dungeon;
 let reminders;
 let milestones;
+let levels;
 
 const statsCommand = new SlashCommandBuilder()
   .setName('stats')
@@ -63,9 +65,16 @@ function shouldCount(message) {
 }
 
 async function registerCommands() {
-  const commands = [statsCommand, bumpReminderCommand, remindCommand, remindersCommand, milestoneCommand].map((c) =>
-    c.toJSON(),
-  );
+  const commands = [
+    statsCommand,
+    bumpReminderCommand,
+    remindCommand,
+    remindersCommand,
+    milestoneCommand,
+    rankCommand,
+    leaderboardCommand,
+    levelsCommand,
+  ].map((c) => c.toJSON());
   const names = commands.map((c) => `/${c.name}`).join(', ');
   if (config.guildId) {
     const guild = await client.guilds.fetch(config.guildId);
@@ -116,6 +125,7 @@ function createClient(intents) {
   reminders?.stop();
   reminders = setupReminders(c, store);
   milestones = setupMilestones(c, store);
+  levels = setupLevels(c, store);
   registerHandlers(c);
   return c;
 }
@@ -168,6 +178,7 @@ function registerHandlers(c) {
     } catch (error) {
       console.error('Failed to record message:', error);
     }
+    levels.onMessage(message).catch((error) => console.error('Failed to award XP:', error));
   });
 
   // Catch links edited into a message after it was sent.
@@ -199,6 +210,18 @@ function registerHandlers(c) {
             .reply({ content: 'Sorry, something went wrong with that reminder.', flags: MessageFlags.Ephemeral })
             .catch(() => {});
         }
+      }
+      return;
+    }
+
+    if (['rank', 'leaderboard', 'levels'].includes(interaction.commandName)) {
+      try {
+        await levels.onCommand(interaction);
+      } catch (error) {
+        console.error(`Failed to handle /${interaction.commandName}:`, error);
+        const payload = { content: 'Sorry, something went wrong.', flags: MessageFlags.Ephemeral };
+        if (interaction.deferred) await interaction.editReply(payload).catch(() => {});
+        else if (!interaction.replied) await interaction.reply(payload).catch(() => {});
       }
       return;
     }
@@ -248,6 +271,9 @@ function registerHandlers(c) {
 
   c.on(Events.GuildMemberAdd, (member) => {
     milestones.onMemberAdd(member).catch((error) => console.error('Failed to check member milestones:', error));
+    if (!member.user.bot) {
+      levels.onMemberAdd(member).catch((error) => console.error('Failed to restore level roles:', error));
+    }
     if (config.guildId && member.guild.id !== config.guildId) return;
     if (member.user.bot) return;
     try {

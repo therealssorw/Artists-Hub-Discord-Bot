@@ -51,6 +51,29 @@ roles and `@everyone`/`@here` need the **Mention @everyone** permission.
 Reminders survive restarts; any that came due while the bot was offline are sent on startup,
 marked late.
 
+## Levels
+
+Members earn **15–25 XP per message**, at most once a minute, so spamming doesn't help. Levels
+use the same curve as Arcane and MEE6: level 1 takes 100 XP, level 5 takes 1,150 XP (roughly an
+hour of active chatting), level 10 takes 4,675 XP. When someone levels up the bot congratulates
+them, and any role reward for that level is given automatically.
+
+- `/rank [user]` – rank card image: level, rank, XP progress and the next reward
+- `/leaderboard [page]` – top members by XP
+
+Setup (needs Manage Server):
+
+- `/levels reward add level:5 role:@Self Promo` – give a role at a level. Members already at
+  that level get it straight away. Add as many as you like, one role per level.
+- `/levels reward remove role:@Self Promo` and `/levels reward list`
+- `/levels announce where:…` – post level-ups where the member chatted (default), in one
+  channel, or turn them off
+- `/levels givexp user:@someone xp:500` – add XP (negative to remove)
+
+The bot needs **Manage Roles**, and its role must sit above the reward roles in Server
+Settings → Roles. Members who leave and come back get their reward roles back. XP starts
+from zero when this is first deployed.
+
 ## Links need 50 messages
 
 New members can't post links until they've sent **50 messages**. If someone below that posts a
@@ -129,6 +152,8 @@ tracked live). It is safe to run again later.
 
 - `src/index.js` – Discord client, slash commands, and the midnight cron job.
 - `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
+- `src/levels.js` – XP, levels, role rewards, `/rank`, `/leaderboard` and `/levels`.
+- `src/canvas.js` – shared drawing helpers for the rank card and milestone images.
 - `src/links.js` – the link gate for new members.
 - `src/milestone.js` – member milestone snapshots and `/milestone preview`.
 - `src/reminders.js` – the `/remind` and `/reminders` commands; `src/when.js` parses their times.

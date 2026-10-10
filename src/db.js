@@ -75,6 +75,23 @@ export class StatsStore {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_reminders_guild ON reminders (guild_id, creator_id);
+
+      CREATE TABLE IF NOT EXISTS levels (
+        guild_id   TEXT    NOT NULL,
+        user_id    TEXT    NOT NULL,
+        xp         INTEGER NOT NULL DEFAULT 0,
+        messages   INTEGER NOT NULL DEFAULT 0, -- messages that earned XP
+        last_xp_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_levels_rank ON levels (guild_id, xp DESC);
+
+      CREATE TABLE IF NOT EXISTS level_rewards (
+        guild_id TEXT    NOT NULL,
+        role_id  TEXT    NOT NULL,
+        level    INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, role_id)
+      );
     `);
 
     this.stmts = {
@@ -149,6 +166,28 @@ export class StatsStore {
       ),
       rescheduleReminder: this.db.prepare('UPDATE reminders SET due_at = ? WHERE id = ?'),
       deleteReminder: this.db.prepare('DELETE FROM reminders WHERE id = ?'),
+      getLevel: this.db.prepare(
+        'SELECT xp, messages, last_xp_at AS lastXpAt FROM levels WHERE guild_id = ? AND user_id = ?',
+      ),
+      addXp: this.db.prepare(`
+        INSERT INTO levels (guild_id, user_id, xp, messages, last_xp_at) VALUES (@guildId, @userId, MAX(0, @xp), @messages, @at)
+        ON CONFLICT (guild_id, user_id) DO UPDATE SET
+          xp = MAX(0, xp + @xp),
+          messages = messages + @messages,
+          last_xp_at = MAX(last_xp_at, @at)
+      `),
+      rankOf: this.db.prepare('SELECT COUNT(*) + 1 AS rank FROM levels WHERE guild_id = ? AND xp > ?'),
+      leaderboard: this.db.prepare(`
+        SELECT user_id AS userId, xp, messages FROM levels
+        WHERE guild_id = ? AND xp > 0 ORDER BY xp DESC, user_id LIMIT ? OFFSET ?
+      `),
+      rankedCount: this.db.prepare('SELECT COUNT(*) AS count FROM levels WHERE guild_id = ? AND xp > 0'),
+      usersWithXp: this.db.prepare('SELECT user_id AS userId, xp FROM levels WHERE guild_id = ? AND xp >= ?'),
+      setReward: this.db.prepare('INSERT OR REPLACE INTO level_rewards (guild_id, role_id, level) VALUES (?, ?, ?)'),
+      deleteReward: this.db.prepare('DELETE FROM level_rewards WHERE guild_id = ? AND role_id = ?'),
+      rewards: this.db.prepare(
+        'SELECT role_id AS roleId, level FROM level_rewards WHERE guild_id = ? ORDER BY level, role_id',
+      ),
     };
   }
 
@@ -317,6 +356,54 @@ export class StatsStore {
 
   deleteReminder(id) {
     return this.stmts.deleteReminder.run(id).changes > 0;
+  }
+
+  // ----- Levels -----
+
+  /** { xp, messages, lastXpAt } for a member (zeros if they have none). */
+  getLevel(guildId, userId) {
+    return this.stmts.getLevel.get(guildId, userId) ?? { xp: 0, messages: 0, lastXpAt: 0 };
+  }
+
+  /**
+   * Add `xp` (may be negative; the total never drops below 0). `messages` is
+   * how many XP-earning messages this adds. Returns the new total.
+   */
+  addXp(guildId, userId, xp, { messages = 0, at = 0 } = {}) {
+    this.stmts.addXp.run({ guildId, userId, xp, messages, at });
+    return this.getLevel(guildId, userId).xp;
+  }
+
+  /** 1-based leaderboard position for a member with `xp`. */
+  getRank(guildId, xp) {
+    return this.stmts.rankOf.get(guildId, xp).rank;
+  }
+
+  /** A page of [{ userId, xp, messages }], most XP first. */
+  getLeaderboard(guildId, limit = 10, offset = 0) {
+    return this.stmts.leaderboard.all(guildId, limit, offset);
+  }
+
+  getRankedCount(guildId) {
+    return this.stmts.rankedCount.get(guildId).count;
+  }
+
+  /** Members with at least `minXp`. */
+  getUsersWithXp(guildId, minXp) {
+    return this.stmts.usersWithXp.all(guildId, minXp);
+  }
+
+  setLevelReward(guildId, roleId, level) {
+    this.stmts.setReward.run(guildId, roleId, level);
+  }
+
+  deleteLevelReward(guildId, roleId) {
+    return this.stmts.deleteReward.run(guildId, roleId).changes > 0;
+  }
+
+  /** [{ roleId, level }], lowest level first. */
+  getLevelRewards(guildId) {
+    return this.stmts.rewards.all(guildId);
   }
 
   close() {

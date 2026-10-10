@@ -8,17 +8,11 @@
  * announced once; the fact is stored in the meta table so restarts and
  * leave/rejoin churn around the threshold do not repeat it.
  */
-import { createRequire } from 'node:module';
-
-import { GlobalFonts, createCanvas, loadImage } from '@napi-rs/canvas';
+import { createCanvas } from '@napi-rs/canvas';
 import { AttachmentBuilder, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 
+import { FONT, circleImage, fetchImage, fitText, ring } from './canvas.js';
 import { config } from './config.js';
-
-const require = createRequire(import.meta.url);
-const FONT = 'DejaVu Sans';
-GlobalFonts.registerFromPath(require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans.ttf'), FONT);
-GlobalFonts.registerFromPath(require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf'), FONT);
 
 const WIDTH = 1200;
 const HEIGHT = 675;
@@ -44,44 +38,6 @@ export function ordinal(n) {
 /** Milestones newly reached at `count` that have not been announced yet. */
 export function reachedMilestones(milestones, count, isAnnounced) {
   return milestones.filter((m) => count >= m && !isAnnounced(m));
-}
-
-function circleImage(ctx, image, x, y, size, fallbackText) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
-  ctx.closePath();
-  ctx.clip();
-  if (image) {
-    ctx.drawImage(image, x, y, size, size);
-  } else {
-    ctx.fillStyle = '#5865f2';
-    ctx.fillRect(x, y, size, size);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.round(size * 0.42)}px "${FONT}"`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText((fallbackText || '?').slice(0, 1).toUpperCase(), x + size / 2, y + size / 2 + 2);
-  }
-  ctx.restore();
-}
-
-function ring(ctx, x, y, size, color, width) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(x + size / 2, y + size / 2, size / 2 + width / 2, 0, Math.PI * 2);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.stroke();
-  ctx.restore();
-}
-
-/** Shrink `text` until it fits in `maxWidth`, adding an ellipsis if it must be cut. */
-function fitText(ctx, text, maxWidth) {
-  if (ctx.measureText(text).width <= maxWidth) return text;
-  let cut = text;
-  while (cut.length > 1 && ctx.measureText(`${cut}…`).width > maxWidth) cut = cut.slice(0, -1);
-  return `${cut}…`;
 }
 
 /** Deterministic confetti so every render of the same milestone looks the same. */
@@ -215,17 +171,6 @@ export function renderMilestoneCard({
   }
 
   return canvas.toBuffer('image/png');
-}
-
-async function fetchImage(url) {
-  if (!url) return null;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return await loadImage(Buffer.from(await res.arrayBuffer()));
-  } catch {
-    return null;
-  }
 }
 
 export function setupMilestones(client, store) {
