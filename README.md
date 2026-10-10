@@ -54,7 +54,8 @@ marked late.
 ## Links need 50 messages
 
 New members can't post links until they've sent **50 messages**. If someone below that posts a
-link, the bot removes it and tells them how many messages they have left. The note deletes itself
+link, the bot removes it and asks them to be more active first (without saying how many messages
+are needed). The note deletes itself
 after 15 seconds. **GIFs are always allowed**: Tenor, Giphy and Klipy links, any `.gif` URL, and
 anything picked from Discord's GIF menu. File uploads aren't affected, and links edited into an
 old message are caught too.

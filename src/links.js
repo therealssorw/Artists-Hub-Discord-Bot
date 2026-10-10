@@ -1,8 +1,9 @@
 /**
  * Link gate: members need LINK_MIN_MESSAGES messages (50 by default) before
  * they can post links. A link from someone below that is removed and the bot
- * tells them how far they have to go. GIFs (Tenor, Giphy, Klipy, or any .gif
- * URL) are always allowed, as are attachments. Moderators (Manage Messages)
+ * asks them to be more active first, without saying how many messages it
+ * takes. GIFs (Tenor, Giphy, Klipy, or any .gif URL) are always allowed, as
+ * are attachments. Moderators (Manage Messages)
  * and LINK_EXEMPT_ROLE_IDS are exempt.
  *
  * Reading links needs the Message Content intent, and deleting them needs the
@@ -42,12 +43,10 @@ export function blockedLinks(text) {
   return findLinks(text).filter((link) => !isGifLink(link));
 }
 
-export function warningText(userId, count, required) {
-  const left = required - count;
+export function warningText(userId) {
   return (
-    `👋 <@${userId}>, links unlock after **${required} messages** so we know you're not a spam bot. ` +
-    `You're at ${count}, just ${left} more to go! Chat with everyone for a bit and try again. ` +
-    'GIFs are always fine. 🎨'
+    `👋 <@${userId}>, links unlock once you've been a bit more active, so we know you're not a spam bot. ` +
+    'Chat with everyone for a while and try again. GIFs are always fine. 🎨'
   );
 }
 
@@ -61,12 +60,12 @@ export function setupLinkGate(store) {
     return config.linkExemptRoleIds.some((id) => member.roles?.cache?.has(id));
   }
 
-  async function warn(message, count) {
+  async function warn(message) {
     const now = Date.now();
     if (now - (lastWarned.get(message.author.id) ?? 0) < WARNING_COOLDOWN_MS) return;
     lastWarned.set(message.author.id, now);
     const notice = await message.channel.send({
-      content: warningText(message.author.id, count, config.linkMinMessages),
+      content: warningText(message.author.id),
       allowedMentions: { users: [message.author.id] },
     });
     setTimeout(() => notice.delete().catch(() => {}), WARNING_LIFETIME_MS);
@@ -93,7 +92,7 @@ export function setupLinkGate(store) {
     }
     console.log(`Removed a link from ${message.author.tag} (${count}/${config.linkMinMessages} messages).`);
     try {
-      await warn(message, count);
+      await warn(message);
     } catch (error) {
       console.error('Failed to send the link warning:', error);
     }

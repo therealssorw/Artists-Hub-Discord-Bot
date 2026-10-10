@@ -38,8 +38,10 @@ test('blockedLinks ignores GIFs but not other links in the same message', () => 
   assert.deepEqual(blockedLinks('lol https://tenor.com/view/x https://shop.example'), ['https://shop.example']);
 });
 
-test('warningText says how many messages are left', () => {
-  assert.match(warningText('42', 12, 50), /<@42>.*50 messages.*You're at 12, just 38 more/s);
+test('warningText asks for more activity without giving numbers', () => {
+  const text = warningText('42');
+  assert.match(text, /<@42>.*more active/);
+  assert.doesNotMatch(text.replace('<@42>', ''), /\d/);
 });
 
 function fakeMessage({ content, count, perms = 0n, store }) {
@@ -69,7 +71,7 @@ test('the gate removes links from new members and warns them', async (t) => {
   const newbie = fakeMessage({ content: 'my shop https://shop.example', count: 10, store });
   assert.equal(await gate.check(newbie), true);
   assert.equal(newbie.deleted, true);
-  assert.match(newbie.sent[0].content, /You're at 10, just 40 more/);
+  assert.match(newbie.sent[0].content, /more active/);
   assert.deepEqual(newbie.sent[0].allowedMentions, { users: ['u1'] });
 
   const gif = fakeMessage({ content: 'https://tenor.com/view/yay', count: 0, store });
