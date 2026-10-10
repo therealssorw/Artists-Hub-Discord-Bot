@@ -13,6 +13,7 @@ import { bumpReminderCommand, setupBumpReminders } from './bump.js';
 import { config } from './config.js';
 import { StatsStore } from './db.js';
 import { setupDungeonArrivals } from './dungeon.js';
+import { setupLinkGate } from './links.js';
 import { buildReportEmbed } from './report.js';
 import { milestoneCommand, setupMilestones } from './milestone.js';
 import { remindCommand, remindersCommand, setupReminders } from './reminders.js';
@@ -20,6 +21,7 @@ import { computeStats } from './stats.js';
 import { dayKey, shiftDay, todayKey } from './time.js';
 
 const store = new StatsStore(config.databasePath);
+const linkGate = setupLinkGate(store);
 
 /**
  * Two privileged intents are requested (toggle them on under Bot -> Privileged
@@ -152,18 +154,27 @@ function registerHandlers(c) {
     await catchUpMissedReport();
   });
 
-  c.on(Events.MessageCreate, (message) => {
+  c.on(Events.MessageCreate, async (message) => {
     try {
       bumps.onMessage(message);
     } catch (error) {
       console.error('Failed to handle bump message:', error);
     }
     if (!shouldCount(message)) return;
+    // A removed link does not count towards the member's message total.
+    if (await linkGate.check(message).catch(() => false)) return;
     try {
       store.recordMessage(dayKey(message.createdAt, config.timezone), message.author.id);
     } catch (error) {
       console.error('Failed to record message:', error);
     }
+  });
+
+  // Catch links edited into a message after it was sent.
+  c.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+    if (newMessage.partial || !shouldCount(newMessage)) return;
+    if (oldMessage.content === newMessage.content) return;
+    linkGate.check(newMessage).catch((error) => console.error('Failed to check edited message:', error));
   });
 
   c.on(Events.InteractionCreate, async (interaction) => {

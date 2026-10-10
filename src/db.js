@@ -30,6 +30,7 @@ export class StatsStore {
         PRIMARY KEY (day, user_id)
       );
       CREATE INDEX IF NOT EXISTS idx_daily_user_messages_day ON daily_user_messages (day);
+      CREATE INDEX IF NOT EXISTS idx_daily_user_messages_user ON daily_user_messages (user_id);
 
       CREATE TABLE IF NOT EXISTS reports (
         day       TEXT PRIMARY KEY,
@@ -92,6 +93,9 @@ export class StatsStore {
         GROUP BY day
         ORDER BY day
       `),
+      userTotal: this.db.prepare(
+        'SELECT COALESCE(SUM(count), 0) AS count FROM daily_user_messages WHERE user_id = ?',
+      ),
       clearDay: this.db.prepare('DELETE FROM daily_user_messages WHERE day = ?'),
       firstTimeSenders: this.db.prepare(`
         SELECT COUNT(*) AS count FROM (
@@ -151,6 +155,11 @@ export class StatsStore {
   /** Record `count` messages from `userId` on `day`. */
   recordMessage(day, userId, count = 1) {
     this.stmts.increment.run(day, userId, count);
+  }
+
+  /** All messages ever recorded for a user. */
+  getUserMessageCount(userId) {
+    return this.stmts.userTotal.get(userId).count;
   }
 
   /** Replace all data for a day with the given { userId: count } map. */

@@ -51,6 +51,20 @@ roles and `@everyone`/`@here` need the **Mention @everyone** permission.
 Reminders survive restarts; any that came due while the bot was offline are sent on startup,
 marked late.
 
+## Links need 50 messages
+
+New members can't post links until they've sent **50 messages**. If someone below that posts a
+link, the bot removes it and tells them how many messages they have left. The note deletes itself
+after 15 seconds. **GIFs are always allowed**: Tenor, Giphy and Klipy links, any `.gif` URL, and
+anything picked from Discord's GIF menu. File uploads aren't affected, and links edited into an
+old message are caught too.
+
+Moderators (Manage Messages) are exempt. Set `LINK_EXEMPT_ROLE_IDS` to exempt roles too, change
+the number with `LINK_MIN_MESSAGES`, or set it to `0` to turn the gate off. Messages count from
+the bot's history, so members already active in the last 60 days (see Backfilling) are
+unaffected. The bot needs **Manage Messages** to remove links and the **Message Content** intent
+to see them.
+
 ## Member milestones
 
 When the server reaches **100 members**, the bot posts a snapshot image of the moment in the
@@ -114,6 +128,7 @@ tracked live). It is safe to run again later.
 
 - `src/index.js` – Discord client, slash commands, and the midnight cron job.
 - `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
+- `src/links.js` – the link gate for new members.
 - `src/milestone.js` – member milestone snapshots and `/milestone preview`.
 - `src/reminders.js` – the `/remind` and `/reminders` commands; `src/when.js` parses their times.
   If the bot was offline at midnight it posts the missed report on the next startup.
@@ -135,6 +150,8 @@ last 30 days versus the 30 days before that.
 | `GUILD_ID`         | –                       | Register commands and count messages only in this server  |
 | `DATABASE_PATH`    | `./data/stats.db`       | SQLite file location                                      |
 | `TIMEZONE`         | `America/New_York`      | Day boundaries, report time and `/remind` clock times     |
+| `LINK_MIN_MESSAGES` | `50`                   | Messages needed before posting links (`0` = off)          |
+| `LINK_EXEMPT_ROLE_IDS` | –                   | Roles that can always post links (comma separated)        |
 | `MILESTONES`       | `100`                   | Member counts that trigger a snapshot (comma separated)   |
 | `MILESTONE_CHANNEL_ID` | `STATS_CHANNEL_ID`  | Channel for milestone snapshots                           |
 | `MILESTONE_USER_ID`    | server owner        | Who to ping at a milestone                                |

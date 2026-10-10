@@ -33,6 +33,13 @@ export const config = {
   },
   /** Who to ping at a milestone (default: the server owner). */
   milestoneUserId: process.env.MILESTONE_USER_ID || null,
+  /** Messages a member needs before they can post links (0 turns the gate off). */
+  linkMinMessages: process.env.LINK_MIN_MESSAGES ? Math.max(0, Number(process.env.LINK_MIN_MESSAGES) || 0) : 50,
+  /** Roles allowed to post links regardless of message count. */
+  linkExemptRoleIds: (process.env.LINK_EXEMPT_ROLE_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
   /** Number of days in the rolling window used for averages and growth. */
   windowDays: 30,
 };
