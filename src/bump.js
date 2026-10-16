@@ -2,8 +2,9 @@
  * Disboard bump reminders.
  *
  * When someone runs Disboard's /bump and Disboard replies "Bump done!", the bot
- * schedules a reminder for two hours later (Disboard's cooldown) that pings a
- * role chosen with /bumpreminder. Pending reminders are stored in SQLite so a
+ * schedules a reminder for when the cooldown ends (2 hours, or 30 minutes with
+ * DISBOARD Pro, chosen with /bumpreminder set) that pings a role chosen with
+ * /bumpreminder. Pending reminders are stored in SQLite so a
  * restart does not lose them.
  */
 import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
@@ -11,11 +12,19 @@ import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 export const DISBOARD_BOT_ID = '302050872383242240';
 /** Disboard's global /bump command id, used to render a clickable mention. */
 const DISBOARD_BUMP_COMMAND = '</bump:947088344167366698>';
-export const BUMP_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+/** Disboard's cooldowns in minutes: the free one and DISBOARD Pro's. */
+export const BUMP_COOLDOWNS = { free: 120, pro: 30 };
+export const BUMP_COOLDOWN_MS = BUMP_COOLDOWNS.free * 60 * 1000;
+
+/** "2 hours", "30 minutes" */
+export function describeCooldown(minutes) {
+  if (minutes % 60 === 0) return `${minutes / 60} hour${minutes === 60 ? '' : 's'}`;
+  return `${minutes} minutes`;
+}
 
 export const bumpReminderCommand = new SlashCommandBuilder()
   .setName('bumpreminder')
-  .setDescription('Ping a role two hours after every Disboard /bump.')
+  .setDescription('Ping a role when Disboard /bump is ready again.')
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
   .setDMPermission(false)
   .addSubcommand((sub) =>
@@ -24,6 +33,15 @@ export const bumpReminderCommand = new SlashCommandBuilder()
       .setDescription('Choose the role to ping when the server can be bumped again.')
       .addRoleOption((opt) =>
         opt.setName('role').setDescription('Role to ping').setRequired(true),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName('cooldown')
+          .setDescription('How long Disboard makes you wait between bumps (default: keep current, 2 hours)')
+          .addChoices(
+            { name: '2 hours (free Disboard)', value: BUMP_COOLDOWNS.free },
+            { name: '30 minutes (DISBOARD Pro)', value: BUMP_COOLDOWNS.pro },
+          ),
       ),
   )
   .addSubcommand((sub) =>
@@ -102,10 +120,17 @@ export function setupBumpReminders(client, store) {
     if (count) console.log(`Restored ${count} pending bump reminder(s).`);
   }
 
+  const cooldownKey = (guildId) => `bump:cooldown:${guildId}`;
+
+  /** Minutes between bumps for a guild (2 hours unless set to DISBOARD Pro's 30 minutes). */
+  function cooldownMinutes(guildId) {
+    return Number(store.getMeta(cooldownKey(guildId))) || BUMP_COOLDOWNS.free;
+  }
+
   function onMessage(message) {
     if (!message.inGuild() || !isBumpDone(message)) return;
     if (!store.getBumpRole(message.guildId)) return; // feature not enabled here
-    const dueAt = message.createdTimestamp + BUMP_COOLDOWN_MS;
+    const dueAt = message.createdTimestamp + cooldownMinutes(message.guildId) * 60 * 1000;
     schedule(message.guildId, message.channelId, dueAt);
     console.log(
       `Bump detected in guild ${message.guildId}; reminder at ${new Date(dueAt).toISOString()}.`,
@@ -118,9 +143,22 @@ export function setupBumpReminders(client, store) {
 
     if (sub === 'set') {
       const role = interaction.options.getRole('role', true);
+      const previous = cooldownMinutes(guildId);
+      const minutes = interaction.options.getInteger('cooldown') ?? previous;
       store.setBumpRole(guildId, role.id);
+      store.setMeta(cooldownKey(guildId), String(minutes));
+
+      // Move a pending reminder to match the new cooldown.
+      let moved = '';
+      const pending = store.getBumpReminder(guildId);
+      if (pending && minutes !== previous) {
+        const bumpedAt = pending.dueAt - previous * 60 * 1000;
+        const dueAt = bumpedAt + minutes * 60 * 1000;
+        schedule(guildId, pending.channelId, dueAt);
+        moved = ` The next reminder is now <t:${Math.floor(dueAt / 1000)}:R>.`;
+      }
       await interaction.reply({
-        content: `✅ I'll ping ${role} two hours after every Disboard bump.`,
+        content: `✅ I'll ping ${role} ${describeCooldown(minutes)} after every Disboard bump.${moved}`,
         allowedMentions: { parse: [] },
       });
       return;
@@ -145,7 +183,7 @@ export function setupBumpReminders(client, store) {
       ? `Next reminder <t:${Math.floor(pending.dueAt / 1000)}:R> in <#${pending.channelId}>.`
       : 'No bump detected yet; the first reminder will follow the next /bump.';
     await interaction.reply({
-      content: `Reminder role: <@&${roleId}>\n${next}`,
+      content: `Reminder role: <@&${roleId}>\nCooldown: ${describeCooldown(cooldownMinutes(guildId))}\n${next}`,
       allowedMentions: { parse: [] },
     });
   }

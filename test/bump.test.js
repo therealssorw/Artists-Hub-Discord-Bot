@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { DISBOARD_BOT_ID, isBumpDone } from '../src/bump.js';
+import { BUMP_COOLDOWNS, DISBOARD_BOT_ID, describeCooldown, isBumpDone } from '../src/bump.js';
 import { StatsStore } from '../src/db.js';
 
 const disboard = (extra) => ({ author: { id: DISBOARD_BOT_ID }, embeds: [], ...extra });
@@ -43,4 +43,10 @@ test('store persists bump role and reminders', () => {
   assert.equal(store.getBumpReminder('g1'), null);
   assert.equal(store.getBumpRole('g1'), null);
   store.close();
+});
+
+test('describeCooldown covers the free and DISBOARD Pro cooldowns', () => {
+  assert.equal(describeCooldown(BUMP_COOLDOWNS.free), '2 hours');
+  assert.equal(describeCooldown(BUMP_COOLDOWNS.pro), '30 minutes');
+  assert.equal(describeCooldown(60), '1 hour');
 });

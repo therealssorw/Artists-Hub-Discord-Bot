@@ -13,12 +13,14 @@ configured stats channel:
 
 The same report is available on demand with **`/stats`** (today so far, or yesterday).
 
-It also sends **Disboard bump reminders**: two hours after someone runs Disboard's `/bump`
-successfully, the bot pings a role of your choice in the same channel so the server gets
-bumped again as soon as the cooldown ends.
+It also sends **Disboard bump reminders**: when Disboard's cooldown ends after a successful
+`/bump` (2 hours, or 30 minutes with DISBOARD Pro), the bot pings a role of your choice in the
+same channel so the server gets bumped again right away.
 
-- `/bumpreminder set role:@Role` – choose the role to ping (needs Manage Server)
-- `/bumpreminder status` – show the role and when the next reminder is due
+- `/bumpreminder set role:@Role` – choose the role to ping (needs Manage Server). Add
+  `cooldown:30 minutes (DISBOARD Pro)` if the server has Pro; leaving it out keeps the current
+  setting (2 hours by default).
+- `/bumpreminder status` – show the role, the cooldown and when the next reminder is due
 - `/bumpreminder disable` – turn reminders off
 
 Pending reminders are saved to the database, so a restart does not lose them.
