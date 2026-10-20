@@ -27,10 +27,11 @@ export const config = {
     .map((n) => Number(n.trim()))
     .filter((n) => Number.isInteger(n) && n > 0)
     .sort((a, b) => a - b),
-  /** Where milestone snapshots go (default: the stats channel). */
-  get milestoneChannelId() {
-    return process.env.MILESTONE_CHANNEL_ID || this.statsChannelId;
-  },
+  /**
+   * Where milestone snapshots go in the server this channel belongs to. Other
+   * servers (and this one, when unset) use their daily stats channel.
+   */
+  milestoneChannelId: process.env.MILESTONE_CHANNEL_ID || null,
   /** Who to ping at a milestone (default: the server owner). */
   milestoneUserId: process.env.MILESTONE_USER_ID || null,
   /** Messages a member needs before they can post links (0 turns the gate off). */

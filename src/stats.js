@@ -14,8 +14,8 @@ function trackedDays(from, to, trackingSince) {
   return Math.round(ms / 86_400_000) + 1;
 }
 
-function windowSummary(store, from, to, trackingSince) {
-  const rows = store.getRange(from, to);
+function windowSummary(store, guildId, from, to, trackingSince) {
+  const rows = store.getRange(guildId, from, to);
   const days = trackedDays(from, to, trackingSince);
   const messages = rows.reduce((sum, r) => sum + r.messages, 0);
   const uniqueSenders = rows.reduce((sum, r) => sum + r.uniqueSenders, 0);
@@ -37,31 +37,31 @@ export function percentChange(current, previous) {
 }
 
 /**
- * Build the numbers behind a stats report for `day`.
+ * Build the numbers behind a server's stats report for `day`.
  *
  * - `day`: totals for that single day
  * - `window`: the `windowDays` days ending on `day` (inclusive)
  * - `previous`: the `windowDays` days immediately before `window`
  * - `growth`: percentage change of the window's daily averages vs `previous`
  */
-export function computeStats(store, day, windowDays = 30) {
-  const trackingSince = store.getTrackingSince() ?? store.getFirstDay();
+export function computeStats(store, guildId, day, windowDays = 30) {
+  const trackingSince = store.getTrackingSince(guildId) ?? store.getFirstDay(guildId);
 
   const windowFrom = shiftDay(day, -(windowDays - 1));
   const previousTo = shiftDay(windowFrom, -1);
   const previousFrom = shiftDay(previousTo, -(windowDays - 1));
 
-  const window = windowSummary(store, windowFrom, day, trackingSince);
-  const previous = windowSummary(store, previousFrom, previousTo, trackingSince);
+  const window = windowSummary(store, guildId, windowFrom, day, trackingSince);
+  const previous = windowSummary(store, guildId, previousFrom, previousTo, trackingSince);
 
   return {
     day,
     windowDays,
     trackingSince,
-    today: store.getDay(day),
+    today: store.getDay(guildId, day),
     members: {
-      ...store.getMemberEvents(day),
-      firstTimeSenders: store.getFirstTimeSenders(day),
+      ...store.getMemberEvents(guildId, day),
+      firstTimeSenders: store.getFirstTimeSenders(guildId, day),
     },
     window,
     previous,

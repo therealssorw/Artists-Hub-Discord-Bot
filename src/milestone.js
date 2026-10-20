@@ -216,9 +216,19 @@ export function setupMilestones(client, store) {
     return { file: new AttachmentBuilder(png, { name: `milestone-${milestone}.png` }), featuredMember };
   }
 
+  /** MILESTONE_CHANNEL_ID if it is in this server, else its daily stats channel, else its system channel. */
+  async function milestoneChannel(guild) {
+    const candidates = [config.milestoneChannelId, store.getStatsSettings(guild.id)?.channelId].filter(Boolean);
+    for (const id of candidates) {
+      const channel = await client.channels.fetch(id).catch(() => null);
+      if (channel?.isTextBased() && channel.guildId === guild.id) return channel;
+    }
+    return guild.systemChannel ?? null;
+  }
+
   async function announce(guild, milestone, newest) {
-    const channel = await client.channels.fetch(config.milestoneChannelId);
-    if (!channel?.isTextBased()) throw new Error(`Milestone channel ${config.milestoneChannelId} is not a text channel.`);
+    const channel = await milestoneChannel(guild);
+    if (!channel) throw new Error(`No channel for milestones in guild ${guild.id}; set one with /stats reminder set.`);
     const pingId = config.milestoneUserId || guild.ownerId;
     const { file, featuredMember } = await buildCard(guild, milestone, newest);
     const welcome =
@@ -267,8 +277,10 @@ export function setupMilestones(client, store) {
     const milestone = next ?? config.milestones.at(-1);
     const { file } = await buildCard(guild, milestone);
     const pingId = config.milestoneUserId || guild.ownerId;
+    const channel = await milestoneChannel(guild);
+    const where = channel ? `in ${channel}` : '(no channel yet: set one with `/stats reminder set`)';
     const status = next
-      ? `${count} members now, ${next - count} to go. At ${next} I'll post this in <#${config.milestoneChannelId}> and ping <@${pingId}>.`
+      ? `${count} members now, ${next - count} to go. At ${next} I'll post this ${where} and ping <@${pingId}>.`
       : `${count} members now; every configured milestone (${config.milestones.join(', ')}) has been reached.`;
     await interaction.editReply({ content: `Preview · ${status}`, files: [file], allowedMentions: { parse: [] } });
   }

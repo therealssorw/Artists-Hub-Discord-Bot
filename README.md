@@ -1,9 +1,9 @@
 # Artists Hub Discord Bot
 
-A small Discord bot that tracks server activity and posts a daily stats report.
+A small Discord bot that tracks server activity and posts a daily stats report. It works in
+several servers at once, and each server's stats are kept separately.
 
-Every day at **12:00 AM America/New_York** (Eastern time, DST-aware) it posts to the
-configured stats channel:
+Every day, at the time each server picks, it posts a report in that server's stats channel:
 
 - **Messages** sent that day
 - **Returning senders** and **new senders** that day (new = first message ever)
@@ -11,7 +11,14 @@ configured stats channel:
 - The **30-day average** of both
 - **Growth** of those averages compared with the previous 30 days
 
-The same report is available on demand with **`/stats`** (today so far, or yesterday).
+- `/stats reminder set channel:#chat time:9pm` – choose the channel and time for this server
+  (Eastern time, needs Manage Server). Times like `midnight`, `9am`, `9:30pm` or `21:30` work.
+  A report before noon covers the previous full day; one from noon on covers that day so far.
+- `/stats reminder status` / `/stats reminder disable`
+- `/stats show [day]` – the same report on demand (today so far, or yesterday)
+
+The server the bot was first set up for keeps its midnight report in `STATS_CHANNEL_ID` until you
+change it. A report missed while the bot was offline is posted when it comes back.
 
 It also sends **Disboard bump reminders**: two hours after someone runs Disboard's `/bump`
 successfully, the bot pings a role of your choice in the same channel so the server gets
@@ -92,7 +99,7 @@ to see them.
 ## Member milestones
 
 When the server reaches **100 members**, the bot posts a snapshot image of the moment in the
-stats channel and pings the server owner. The image shows the server icon and name, the count,
+server's stats channel (or its system channel if it has none) and pings the server owner. The image shows the server icon and name, the count,
 when it happened, the member who tipped it over and the latest arrivals. Each milestone is
 announced once, even if people leave and rejoin around it. If the bot was offline when the
 count was reached, it posts on its next startup.
@@ -148,9 +155,14 @@ bot messages, and overwrites the stored counts for those days. It also records j
 current member's join date (members who already left cannot be recovered; leaves are only
 tracked live). It is safe to run again later.
 
+Each server is backfilled separately. Stats recorded before the bot tracked servers separately
+are assigned to the server with `STATS_CHANNEL_ID`; run the backfill once after updating to
+split the last 60 days correctly between servers.
+
 ## How it works
 
-- `src/index.js` – Discord client, slash commands, and the midnight cron job.
+- `src/index.js` – Discord client, events and slash command routing.
+- `src/dailyreport.js` – `/stats` and the per-server daily report schedule.
 - `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
 - `src/levels.js` – XP, levels, role rewards, `/rank`, `/leaderboard` and `/levels`.
 - `src/canvas.js` – shared drawing helpers for the rank card and milestone images.
@@ -158,7 +170,7 @@ tracked live). It is safe to run again later.
 - `src/milestone.js` – member milestone snapshots and `/milestone preview`.
 - `src/reminders.js` – the `/remind` and `/reminders` commands; `src/when.js` parses their times.
   If the bot was offline at midnight it posts the missed report on the next startup.
-- `src/db.js` – SQLite store (`data/stats.db`) with one row per day and user.
+- `src/db.js` – SQLite store (`data/stats.db`) with one row per server, day and user.
 - `src/stats.js` – computes the day totals, 30-day averages and growth.
 - `src/report.js` – builds the Discord embed.
 - `src/backfill.js` – one-off history import.
@@ -172,14 +184,14 @@ last 30 days versus the 30 days before that.
 | Variable           | Default                 | Purpose                                                   |
 | ------------------ | ----------------------- | --------------------------------------------------------- |
 | `DISCORD_TOKEN`    | –                       | Bot token (required)                                      |
-| `STATS_CHANNEL_ID` | `1548706786893238322`   | Channel that receives the daily report                    |
+| `STATS_CHANNEL_ID` | `1548706786893238322`   | First server's report channel until `/stats reminder set` |
 | `GUILD_ID`         | –                       | Register commands and count messages only in this server  |
 | `DATABASE_PATH`    | `./data/stats.db`       | SQLite file location                                      |
 | `TIMEZONE`         | `America/New_York`      | Day boundaries, report time and `/remind` clock times     |
 | `LINK_MIN_MESSAGES` | `50`                   | Messages needed before posting links (`0` = off)          |
 | `LINK_EXEMPT_ROLE_IDS` | –                   | Roles that can always post links (comma separated)        |
 | `MILESTONES`       | `100`                   | Member counts that trigger a snapshot (comma separated)   |
-| `MILESTONE_CHANNEL_ID` | `STATS_CHANNEL_ID`  | Channel for milestone snapshots                           |
+| `MILESTONE_CHANNEL_ID` | stats channel       | Milestone channel (its own server only)                   |
 | `MILESTONE_USER_ID`    | server owner        | Who to ping at a milestone                                |
 
 ## Tests

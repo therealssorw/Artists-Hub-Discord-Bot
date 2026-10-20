@@ -81,7 +81,7 @@ export function setupLinkGate(store) {
     if (!blockedLinks(message.content).length) return false;
     if (isExempt(message.member)) return false;
 
-    const count = store.getUserMessageCount(message.author.id);
+    const count = store.getUserMessageCount(message.guildId, message.author.id);
     if (count >= config.linkMinMessages) return false;
 
     try {

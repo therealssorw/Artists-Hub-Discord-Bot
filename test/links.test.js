@@ -51,6 +51,7 @@ function fakeMessage({ content, count, perms = 0n, store }) {
     author: { id: 'u1', tag: 'u1#0', bot: false },
     system: false,
     member: { permissions: new PermissionsBitField(perms), roles: { cache: new Map() } },
+    guildId: 'g',
     inGuild: () => true,
     deleted: false,
     delete: async () => {
@@ -59,7 +60,7 @@ function fakeMessage({ content, count, perms = 0n, store }) {
     channel: { send: async (m) => (sent.push(m), { delete: async () => {} }) },
     sent,
   };
-  store.recordMessage('2026-10-01', 'u1', count);
+  store.recordMessage('g', '2026-10-01', 'u1', count);
   return message;
 }
 
@@ -82,7 +83,7 @@ test('the gate removes links from new members and warns them', async (t) => {
   assert.equal(await gate.check(mod), false);
 
   const regular = fakeMessage({ content: 'https://portfolio.example', count: 40, store }); // 10 + 0 + 0 + 40 = 50
-  assert.equal(store.getUserMessageCount('u1'), 50);
+  assert.equal(store.getUserMessageCount('g', 'u1'), 50);
   assert.equal(await gate.check(regular), false);
   store.close();
 });

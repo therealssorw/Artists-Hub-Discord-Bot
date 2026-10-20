@@ -6,13 +6,14 @@
  *   npm run backfill            # last 60 days (two 30-day windows)
  *   npm run backfill -- 90      # last 90 days
  *
- * Every day in the range is overwritten with what is found in history, so it
- * is safe to run more than once. Threads (active and archived public) are
+ * Every day in the range is overwritten, per server, with what is found in
+ * history, so it is safe to run more than once. Threads (active and archived public) are
  * included. Messages from bots are ignored, matching live tracking.
  */
 import { ChannelType, Client, GatewayIntentBits } from 'discord.js';
 
 import { config } from './config.js';
+import { claimLegacyStats } from './dailyreport.js';
 import { StatsStore } from './db.js';
 import { dayKey, shiftDay, todayKey } from './time.js';
 
@@ -24,14 +25,19 @@ const cutoffMs = Date.now() - days * 86_400_000 - 86_400_000; // one extra day o
 const store = new StatsStore(config.databasePath);
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-/** counts[day][userId] = number of messages */
-const counts = {};
-/** joins[day] = [{ guildId, userId, ts }] from each current member's join date */
-const joins = {};
-for (let d = fromDay; d <= today; d = shiftDay(d, 1)) {
-  counts[d] = {};
-  joins[d] = [];
+/** counts[day][userId] = number of messages, for the server being scanned */
+let counts = {};
+/** joins[day] = [{ userId, ts }] from each current member's join date */
+let joins = {};
+function resetTallies() {
+  counts = {};
+  joins = {};
+  for (let d = fromDay; d <= today; d = shiftDay(d, 1)) {
+    counts[d] = {};
+    joins[d] = [];
+  }
 }
+let totalMessages = 0;
 
 let scanned = 0;
 
@@ -75,14 +81,27 @@ async function scanMembers(guild) {
     if (member.user.bot || !member.joinedAt) continue;
     const day = dayKey(member.joinedAt, config.timezone);
     if (!joins[day]) continue;
-    joins[day].push({ guildId: guild.id, userId: member.id, ts: member.joinedTimestamp });
+    joins[day].push({ userId: member.id, ts: member.joinedTimestamp });
     found += 1;
   }
   console.log(`  ${found} member join(s) in range (members who have since left are not visible).`);
 }
 
+/** Write one server's tallies, overwriting those days. */
+function saveGuild(guildId) {
+  for (const [day, byUser] of Object.entries(counts)) {
+    store.replaceDay(guildId, day, byUser);
+    totalMessages += Object.values(byUser).reduce((sum, c) => sum + c, 0);
+  }
+  for (const [day, list] of Object.entries(joins)) {
+    if (list.length) store.replaceJoins(guildId, day, list);
+  }
+  store.setTrackingSince(guildId, fromDay);
+}
+
 async function scanGuild(guild) {
   console.log(`Scanning ${guild.name} (${guild.id})...`);
+  resetTallies();
   await scanMembers(guild);
   const channels = await guild.channels.fetch();
   const me = await guild.members.fetchMe();
@@ -119,29 +138,17 @@ async function scanGuild(guild) {
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}. Backfilling ${days} days (${fromDay} → ${today}).`);
   try {
+    // Assign pre-multi-server data first so the backfill overwrites it rather than adding to it.
+    await claimLegacyStats(client, store);
     const guilds = config.guildId
       ? [await client.guilds.fetch(config.guildId)]
       : [...(await client.guilds.fetch()).values()].map((g) => client.guilds.fetch(g.id));
 
     for (const guild of await Promise.all(guilds)) {
       await scanGuild(guild);
+      saveGuild(guild.id);
     }
 
-    for (const [day, byUser] of Object.entries(counts)) {
-      store.replaceDay(day, byUser);
-    }
-    for (const [day, list] of Object.entries(joins)) {
-      if (list.length) store.replaceJoins(day, list);
-    }
-    const existing = store.getTrackingSince();
-    if (!existing || existing > fromDay) {
-      store.stmts.setMeta.run('tracking_since', fromDay);
-    }
-
-    const totalMessages = Object.values(counts).reduce(
-      (sum, byUser) => sum + Object.values(byUser).reduce((s, c) => s + c, 0),
-      0,
-    );
     console.log(`Done. Scanned ${scanned} messages; stored ${totalMessages} user messages across ${days} days.`);
   } catch (error) {
     console.error('Backfill failed:', error);

@@ -1,25 +1,15 @@
-import {
-  ChannelType,
-  Client,
-  Events,
-  GatewayCloseCodes,
-  GatewayIntentBits,
-  MessageFlags,
-  SlashCommandBuilder,
-} from 'discord.js';
-import cron from 'node-cron';
+import { Client, Events, GatewayCloseCodes, GatewayIntentBits, MessageFlags } from 'discord.js';
 
 import { bumpReminderCommand, setupBumpReminders } from './bump.js';
 import { config } from './config.js';
+import { claimLegacyStats, setupDailyReports, statsCommand } from './dailyreport.js';
 import { StatsStore } from './db.js';
 import { setupDungeonArrivals } from './dungeon.js';
 import { leaderboardCommand, levelsCommand, rankCommand, setupLevels } from './levels.js';
 import { setupLinkGate } from './links.js';
-import { buildReportEmbed } from './report.js';
 import { milestoneCommand, setupMilestones } from './milestone.js';
 import { remindCommand, remindersCommand, setupReminders } from './reminders.js';
-import { computeStats } from './stats.js';
-import { dayKey, shiftDay, todayKey } from './time.js';
+import { dayKey, todayKey } from './time.js';
 
 const store = new StatsStore(config.databasePath);
 const linkGate = setupLinkGate(store);
@@ -41,19 +31,7 @@ let dungeon;
 let reminders;
 let milestones;
 let levels;
-
-const statsCommand = new SlashCommandBuilder()
-  .setName('stats')
-  .setDescription('Show message activity stats for the server.')
-  .addStringOption((option) =>
-    option
-      .setName('day')
-      .setDescription('Which day to report on (default: today so far)')
-      .addChoices(
-        { name: 'Today (so far)', value: 'today' },
-        { name: 'Yesterday', value: 'yesterday' },
-      ),
-  );
+let dailyReports;
 
 /** Should this message be counted? */
 function shouldCount(message) {
@@ -86,37 +64,6 @@ async function registerCommands() {
   }
 }
 
-/** Post the report for `day` to the configured stats channel. */
-async function postDailyReport(day) {
-  const channel = await client.channels.fetch(config.statsChannelId);
-  if (!channel || !channel.isTextBased() || channel.type === ChannelType.DM) {
-    throw new Error(`Stats channel ${config.statsChannelId} is not a text channel I can see.`);
-  }
-
-  const stats = computeStats(store, day, config.windowDays);
-  await channel.send({ embeds: [buildReportEmbed(stats)] });
-  store.markReported(day);
-  console.log(`Posted daily report for ${day} to #${channel.name ?? channel.id}.`);
-}
-
-/**
- * If the bot was offline at midnight, post yesterday's report on startup so a
- * day is never silently skipped.
- */
-async function catchUpMissedReport() {
-  const yesterday = shiftDay(todayKey(config.timezone), -1);
-  const trackingSince = store.getTrackingSince();
-  if (!trackingSince || trackingSince > yesterday) return;
-  if (store.wasReported(yesterday)) return;
-
-  console.log(`Report for ${yesterday} was never posted; posting it now.`);
-  try {
-    await postDailyReport(yesterday);
-  } catch (error) {
-    console.error('Failed to post catch-up report:', error);
-  }
-}
-
 function createClient(intents) {
   const c = new Client({ intents });
   bumps = setupBumpReminders(c, store);
@@ -126,6 +73,8 @@ function createClient(intents) {
   reminders = setupReminders(c, store);
   milestones = setupMilestones(c, store);
   levels = setupLevels(c, store);
+  dailyReports?.stop();
+  dailyReports = setupDailyReports(c, store);
   registerHandlers(c);
   return c;
 }
@@ -133,7 +82,13 @@ function createClient(intents) {
 function registerHandlers(c) {
   c.once(Events.ClientReady, async (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}.`);
-    store.setTrackingSinceIfUnset(todayKey(config.timezone));
+    try {
+      await claimLegacyStats(readyClient, store);
+    } catch (error) {
+      console.error('Failed to assign old stats to a server:', error);
+    }
+    const today = todayKey(config.timezone);
+    for (const guild of readyClient.guilds.cache.values()) store.setTrackingSinceIfUnset(guild.id, today);
 
     try {
       await registerCommands();
@@ -141,27 +96,15 @@ function registerHandlers(c) {
       console.error('Failed to register slash commands:', error);
     }
 
-    // 12:00 AM every day in the configured timezone (America/New_York by default).
-    cron.schedule(
-      '0 0 * * *',
-      async () => {
-        // Report on the day that just ended, not the new day that just began.
-        const day = shiftDay(todayKey(config.timezone), -1);
-        try {
-          await postDailyReport(day);
-        } catch (error) {
-          console.error(`Failed to post daily report for ${day}:`, error);
-        }
-      },
-      { timezone: config.timezone },
-    );
-    console.log(`Daily report scheduled for 00:00 ${config.timezone} in channel ${config.statsChannelId}.`);
-
     bumps.restore();
     reminders.restore();
     milestones.checkAll().catch((error) => console.error('Failed to check member milestones:', error));
     dungeon.start();
-    await catchUpMissedReport();
+    dailyReports.start();
+  });
+
+  c.on(Events.GuildCreate, (guild) => {
+    store.setTrackingSinceIfUnset(guild.id, todayKey(config.timezone));
   });
 
   c.on(Events.MessageCreate, async (message) => {
@@ -174,7 +117,7 @@ function registerHandlers(c) {
     // A removed link does not count towards the member's message total.
     if (await linkGate.check(message).catch(() => false)) return;
     try {
-      store.recordMessage(dayKey(message.createdAt, config.timezone), message.author.id);
+      store.recordMessage(message.guildId, dayKey(message.createdAt, config.timezone), message.author.id);
     } catch (error) {
       console.error('Failed to record message:', error);
     }
@@ -246,26 +189,13 @@ function registerHandlers(c) {
     }
 
     if (interaction.commandName !== 'stats') return;
-
-    const choice = interaction.options.getString('day') ?? 'today';
-    const today = todayKey(config.timezone);
-    const day = choice === 'yesterday' ? shiftDay(today, -1) : today;
-
     try {
-      const stats = computeStats(store, day, config.windowDays);
-      const embed = buildReportEmbed(stats, {
-        partial: choice === 'today',
-        title: choice === 'today' ? '📊 Stats — Today so far' : undefined,
-      });
-      await interaction.reply({ embeds: [embed] });
+      await dailyReports.onCommand(interaction);
     } catch (error) {
       console.error('Failed to handle /stats:', error);
-      const payload = {
-        content: 'Sorry, I could not compute the stats right now.',
-        flags: MessageFlags.Ephemeral,
-      };
-      if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
-      else await interaction.reply(payload);
+      const payload = { content: 'Sorry, I could not do that right now.', flags: MessageFlags.Ephemeral };
+      if (interaction.deferred || interaction.replied) await interaction.followUp(payload).catch(() => {});
+      else await interaction.reply(payload).catch(() => {});
     }
   });
 
@@ -278,7 +208,7 @@ function registerHandlers(c) {
     if (member.user.bot) return;
     try {
       const now = new Date();
-      store.recordMemberEvent(dayKey(now, config.timezone), member.guild.id, member.id, 'join', now.getTime());
+      store.recordMemberEvent(member.guild.id, dayKey(now, config.timezone), member.id, 'join', now.getTime());
     } catch (error) {
       console.error('Failed to record member join:', error);
     }
@@ -289,7 +219,7 @@ function registerHandlers(c) {
     if (member.user?.bot) return;
     try {
       const now = new Date();
-      store.recordMemberEvent(dayKey(now, config.timezone), member.guild.id, member.id, 'leave', now.getTime());
+      store.recordMemberEvent(member.guild.id, dayKey(now, config.timezone), member.id, 'leave', now.getTime());
     } catch (error) {
       console.error('Failed to record member leave:', error);
     }
@@ -322,6 +252,7 @@ function shutdown(signal) {
   console.log(`Received ${signal}, shutting down.`);
   dungeon?.stop();
   reminders?.stop();
+  dailyReports?.stop();
   client.destroy();
   store.close();
   process.exit(0);

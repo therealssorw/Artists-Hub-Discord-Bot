@@ -12,8 +12,9 @@ function toReminder(row) {
 }
 
 /**
- * Storage for per-day, per-user message counts. Unique senders for a day are
- * simply the number of rows for that day; messages are the sum of `count`.
+ * Storage for per-server, per-day, per-user message counts. Unique senders for
+ * a day are simply the number of rows for that server and day; messages are
+ * the sum of `count`.
  */
 export class StatsStore {
   constructor(databasePath) {
@@ -23,18 +24,26 @@ export class StatsStore {
     this.db = new Database(databasePath);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS daily_user_messages (
-        day     TEXT    NOT NULL,
-        user_id TEXT    NOT NULL,
-        count   INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (day, user_id)
+      CREATE TABLE IF NOT EXISTS guild_messages (
+        guild_id TEXT    NOT NULL,
+        day      TEXT    NOT NULL,
+        user_id  TEXT    NOT NULL,
+        count    INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, day, user_id)
       );
-      CREATE INDEX IF NOT EXISTS idx_daily_user_messages_day ON daily_user_messages (day);
-      CREATE INDEX IF NOT EXISTS idx_daily_user_messages_user ON daily_user_messages (user_id);
+      CREATE INDEX IF NOT EXISTS idx_guild_messages_user ON guild_messages (guild_id, user_id);
 
-      CREATE TABLE IF NOT EXISTS reports (
-        day       TEXT PRIMARY KEY,
-        posted_at TEXT NOT NULL
+      CREATE TABLE IF NOT EXISTS guild_reports (
+        guild_id  TEXT NOT NULL,
+        day       TEXT NOT NULL,
+        posted_at TEXT NOT NULL,
+        PRIMARY KEY (guild_id, day)
+      );
+
+      CREATE TABLE IF NOT EXISTS stats_settings (
+        guild_id    TEXT PRIMARY KEY,
+        channel_id  TEXT NOT NULL,
+        report_time TEXT NOT NULL -- HH:MM in the configured timezone
       );
 
       CREATE TABLE IF NOT EXISTS meta (
@@ -50,7 +59,7 @@ export class StatsStore {
         ts       INTEGER NOT NULL,
         PRIMARY KEY (guild_id, user_id, kind, ts)
       );
-      CREATE INDEX IF NOT EXISTS idx_member_events_day ON member_events (day);
+      CREATE INDEX IF NOT EXISTS idx_member_events_day ON member_events (guild_id, day);
 
       CREATE TABLE IF NOT EXISTS bump_settings (
         guild_id TEXT PRIMARY KEY,
@@ -94,29 +103,31 @@ export class StatsStore {
       );
     `);
 
+    this.migrateSingleServerTables();
+
     this.stmts = {
       increment: this.db.prepare(`
-        INSERT INTO daily_user_messages (day, user_id, count) VALUES (?, ?, ?)
-        ON CONFLICT (day, user_id) DO UPDATE SET count = count + excluded.count
+        INSERT INTO guild_messages (guild_id, day, user_id, count) VALUES (?, ?, ?, ?)
+        ON CONFLICT (guild_id, day, user_id) DO UPDATE SET count = count + excluded.count
       `),
       dayTotals: this.db.prepare(`
         SELECT COALESCE(SUM(count), 0) AS messages, COUNT(*) AS uniqueSenders
-        FROM daily_user_messages WHERE day = ?
+        FROM guild_messages WHERE guild_id = ? AND day = ?
       `),
       rangeTotals: this.db.prepare(`
         SELECT day, SUM(count) AS messages, COUNT(*) AS uniqueSenders
-        FROM daily_user_messages
-        WHERE day >= ? AND day <= ?
+        FROM guild_messages
+        WHERE guild_id = ? AND day >= ? AND day <= ?
         GROUP BY day
         ORDER BY day
       `),
       userTotal: this.db.prepare(
-        'SELECT COALESCE(SUM(count), 0) AS count FROM daily_user_messages WHERE user_id = ?',
+        'SELECT COALESCE(SUM(count), 0) AS count FROM guild_messages WHERE guild_id = ? AND user_id = ?',
       ),
-      clearDay: this.db.prepare('DELETE FROM daily_user_messages WHERE day = ?'),
+      clearDay: this.db.prepare('DELETE FROM guild_messages WHERE guild_id = ? AND day = ?'),
       firstTimeSenders: this.db.prepare(`
         SELECT COUNT(*) AS count FROM (
-          SELECT user_id, MIN(day) AS first_day FROM daily_user_messages GROUP BY user_id
+          SELECT user_id, MIN(day) AS first_day FROM guild_messages WHERE guild_id = ? GROUP BY user_id
         ) WHERE first_day = ?
       `),
       addMemberEvent: this.db.prepare(`
@@ -126,14 +137,26 @@ export class StatsStore {
         SELECT
           COALESCE(SUM(CASE WHEN kind = 'join'  THEN 1 ELSE 0 END), 0) AS joins,
           COALESCE(SUM(CASE WHEN kind = 'leave' THEN 1 ELSE 0 END), 0) AS leaves
-        FROM member_events WHERE day = ?
+        FROM member_events WHERE guild_id = ? AND day = ?
       `),
-      clearJoinsForDay: this.db.prepare("DELETE FROM member_events WHERE day = ? AND kind = 'join'"),
-      firstDay: this.db.prepare('SELECT MIN(day) AS day FROM daily_user_messages'),
-      markReported: this.db.prepare(
-        'INSERT OR REPLACE INTO reports (day, posted_at) VALUES (?, ?)',
+      clearJoinsForDay: this.db.prepare(
+        "DELETE FROM member_events WHERE guild_id = ? AND day = ? AND kind = 'join'",
       ),
-      wasReported: this.db.prepare('SELECT 1 FROM reports WHERE day = ?'),
+      firstDay: this.db.prepare('SELECT MIN(day) AS day FROM guild_messages WHERE guild_id = ?'),
+      markReported: this.db.prepare(
+        'INSERT OR REPLACE INTO guild_reports (guild_id, day, posted_at) VALUES (?, ?, ?)',
+      ),
+      wasReported: this.db.prepare('SELECT 1 FROM guild_reports WHERE guild_id = ? AND day = ?'),
+      getStatsSettings: this.db.prepare(
+        'SELECT guild_id AS guildId, channel_id AS channelId, report_time AS time FROM stats_settings WHERE guild_id = ?',
+      ),
+      allStatsSettings: this.db.prepare(
+        'SELECT guild_id AS guildId, channel_id AS channelId, report_time AS time FROM stats_settings',
+      ),
+      setStatsSettings: this.db.prepare(
+        'INSERT OR REPLACE INTO stats_settings (guild_id, channel_id, report_time) VALUES (?, ?, ?)',
+      ),
+      clearStatsSettings: this.db.prepare('DELETE FROM stats_settings WHERE guild_id = ?'),
       getMeta: this.db.prepare('SELECT value FROM meta WHERE key = ?'),
       setMeta: this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)'),
       deleteMeta: this.db.prepare('DELETE FROM meta WHERE key = ?'),
@@ -191,77 +214,168 @@ export class StatsStore {
     };
   }
 
-  /** Record `count` messages from `userId` on `day`. */
-  recordMessage(day, userId, count = 1) {
-    this.stmts.increment.run(day, userId, count);
-  }
-
-  /** All messages ever recorded for a user. */
-  getUserMessageCount(userId) {
-    return this.stmts.userTotal.get(userId).count;
-  }
-
-  /** Replace all data for a day with the given { userId: count } map. */
-  replaceDay(day, countsByUser) {
+  /**
+   * Before servers were tracked separately, counts lived in daily_user_messages
+   * and reports in reports, with no server id. Move them into the per-server
+   * tables under the placeholder server '' until claimLegacyStats() learns
+   * which server they belong to.
+   */
+  migrateSingleServerTables() {
+    const exists = (name) =>
+      Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     const tx = this.db.transaction(() => {
-      this.stmts.clearDay.run(day);
-      for (const [userId, count] of Object.entries(countsByUser)) {
-        this.stmts.increment.run(day, userId, count);
+      if (exists('daily_user_messages')) {
+        this.db.exec(`
+          INSERT INTO guild_messages (guild_id, day, user_id, count)
+          SELECT '', day, user_id, count FROM daily_user_messages WHERE true
+          ON CONFLICT (guild_id, day, user_id) DO UPDATE SET count = count + excluded.count;
+          DROP TABLE daily_user_messages;
+        `);
+      }
+      if (exists('reports')) {
+        this.db.exec(`
+          INSERT OR IGNORE INTO guild_reports (guild_id, day, posted_at) SELECT '', day, posted_at FROM reports;
+          DROP TABLE reports;
+        `);
+      }
+      this.db.exec("UPDATE meta SET key = 'tracking_since:' WHERE key = 'tracking_since'");
+    });
+    tx();
+  }
+
+  /** Is there pre-multi-server data waiting to be assigned to a server? */
+  hasLegacyStats() {
+    return Boolean(
+      this.db.prepare("SELECT 1 FROM guild_messages WHERE guild_id = '' LIMIT 1").get() ||
+        this.db.prepare("SELECT 1 FROM guild_reports WHERE guild_id = '' LIMIT 1").get() ||
+        this.getMeta('tracking_since:'),
+    );
+  }
+
+  /** Assign pre-multi-server data to `guildId` (the server the bot was set up for). */
+  claimLegacyStats(guildId) {
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(`
+          INSERT INTO guild_messages (guild_id, day, user_id, count)
+          SELECT ?, day, user_id, count FROM guild_messages WHERE guild_id = ''
+          ON CONFLICT (guild_id, day, user_id) DO UPDATE SET count = count + excluded.count
+        `)
+        .run(guildId);
+      this.db.prepare("DELETE FROM guild_messages WHERE guild_id = ''").run();
+      this.db
+        .prepare("INSERT OR IGNORE INTO guild_reports (guild_id, day, posted_at) SELECT ?, day, posted_at FROM guild_reports WHERE guild_id = ''")
+        .run(guildId);
+      this.db.prepare("DELETE FROM guild_reports WHERE guild_id = ''").run();
+      const legacySince = this.getMeta('tracking_since:');
+      if (legacySince) {
+        this.setTrackingSince(guildId, legacySince);
+        this.deleteMeta('tracking_since:');
       }
     });
     tx();
   }
 
-  /** Number of users whose first recorded message was on `day`. */
-  getFirstTimeSenders(day) {
-    return this.stmts.firstTimeSenders.get(day).count;
+  /** Record `count` messages from `userId` in a server on `day`. */
+  recordMessage(guildId, day, userId, count = 1) {
+    this.stmts.increment.run(guildId, day, userId, count);
+  }
+
+  /** Replace a server's data for a day with the given { userId: count } map. */
+  replaceDay(guildId, day, countsByUser) {
+    const tx = this.db.transaction(() => {
+      this.stmts.clearDay.run(guildId, day);
+      for (const [userId, count] of Object.entries(countsByUser)) {
+        this.stmts.increment.run(guildId, day, userId, count);
+      }
+    });
+    tx();
+  }
+
+  /** All messages ever recorded for a user in a server. */
+  getUserMessageCount(guildId, userId) {
+    return this.stmts.userTotal.get(guildId, userId).count;
+  }
+
+  /** Number of users whose first recorded message in the server was on `day`. */
+  getFirstTimeSenders(guildId, day) {
+    return this.stmts.firstTimeSenders.get(guildId, day).count;
   }
 
   /** Record a member joining or leaving. `kind` is 'join' or 'leave'. */
-  recordMemberEvent(day, guildId, userId, kind, ts = Date.now()) {
+  recordMemberEvent(guildId, day, userId, kind, ts = Date.now()) {
     this.stmts.addMemberEvent.run(day, guildId, userId, kind, ts);
   }
 
-  /** { joins, leaves } for a single day. */
-  getMemberEvents(day) {
-    return this.stmts.memberEventCounts.get(day);
+  /** { joins, leaves } for a server on a single day. */
+  getMemberEvents(guildId, day) {
+    return this.stmts.memberEventCounts.get(guildId, day);
   }
 
-  /** Replace recorded joins for a day (used by backfill from member join dates). */
-  replaceJoins(day, joins) {
+  /** Replace a server's recorded joins for a day (used by backfill from member join dates). */
+  replaceJoins(guildId, day, joins) {
     const tx = this.db.transaction(() => {
-      this.stmts.clearJoinsForDay.run(day);
-      for (const { guildId, userId, ts } of joins) {
+      this.stmts.clearJoinsForDay.run(guildId, day);
+      for (const { userId, ts } of joins) {
         this.stmts.addMemberEvent.run(day, guildId, userId, 'join', ts);
       }
     });
     tx();
   }
 
-  /** { messages, uniqueSenders } for a single day (zeros if nothing recorded). */
-  getDay(day) {
-    return this.stmts.dayTotals.get(day);
+  /** { messages, uniqueSenders } for a server on a single day (zeros if nothing recorded). */
+  getDay(guildId, day) {
+    return this.stmts.dayTotals.get(guildId, day);
   }
 
   /** Array of { day, messages, uniqueSenders } for days in [from, to] that have data. */
-  getRange(from, to) {
-    return this.stmts.rangeTotals.all(from, to);
+  getRange(guildId, from, to) {
+    return this.stmts.rangeTotals.all(guildId, from, to);
   }
 
-  /** Earliest day with any data, or null. */
-  getFirstDay() {
-    return this.stmts.firstDay.get().day ?? null;
+  /** Earliest day with any data for a server, or null. */
+  getFirstDay(guildId) {
+    return this.stmts.firstDay.get(guildId).day ?? null;
   }
 
-  /** Day tracking began, as recorded by the bot on first start (may be null). */
-  getTrackingSince() {
-    return this.stmts.getMeta.get('tracking_since')?.value ?? null;
+  /** Day tracking began for a server, as recorded by the bot (may be null). */
+  getTrackingSince(guildId) {
+    return this.getMeta(`tracking_since:${guildId}`);
   }
 
-  setTrackingSinceIfUnset(day) {
-    if (!this.getTrackingSince()) {
-      this.stmts.setMeta.run('tracking_since', day);
-    }
+  /** Move a server's tracking start back to `day` (never forward). */
+  setTrackingSince(guildId, day) {
+    const existing = this.getTrackingSince(guildId);
+    if (!existing || existing > day) this.setMeta(`tracking_since:${guildId}`, day);
+  }
+
+  setTrackingSinceIfUnset(guildId, day) {
+    if (!this.getTrackingSince(guildId)) this.setMeta(`tracking_since:${guildId}`, day);
+  }
+
+  markReported(guildId, day, postedAt = new Date()) {
+    this.stmts.markReported.run(guildId, day, postedAt.toISOString());
+  }
+
+  wasReported(guildId, day) {
+    return Boolean(this.stmts.wasReported.get(guildId, day));
+  }
+
+  /** Daily report settings for a server: { guildId, channelId, time: 'HH:MM' } or null. */
+  getStatsSettings(guildId) {
+    return this.stmts.getStatsSettings.get(guildId) ?? null;
+  }
+
+  getAllStatsSettings() {
+    return this.stmts.allStatsSettings.all();
+  }
+
+  setStatsSettings(guildId, channelId, time) {
+    this.stmts.setStatsSettings.run(guildId, channelId, time);
+  }
+
+  clearStatsSettings(guildId) {
+    this.stmts.clearStatsSettings.run(guildId);
   }
 
   getMeta(key) {
@@ -274,14 +388,6 @@ export class StatsStore {
 
   deleteMeta(key) {
     this.stmts.deleteMeta.run(key);
-  }
-
-  markReported(day, postedAt = new Date()) {
-    this.stmts.markReported.run(day, postedAt.toISOString());
-  }
-
-  wasReported(day) {
-    return Boolean(this.stmts.wasReported.get(day));
   }
 
   // ----- Disboard bump reminders -----
