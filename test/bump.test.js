@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { DISBOARD_BOT_ID, isBumpDone } from '../src/bump.js';
+import {
+  BUMP_COOLDOWN_MS,
+  DISBOARD_BOT_ID,
+  EARLY_BUMP_COOLDOWN_MS,
+  EARLY_BUMP_RECHARGE_MS,
+  isBumpDone,
+  parseEarlyBump,
+  planNextBump,
+  reconcileUses,
+  setupBumpReminders,
+} from '../src/bump.js';
 import { StatsStore } from '../src/db.js';
 
 const disboard = (extra) => ({ author: { id: DISBOARD_BOT_ID }, embeds: [], ...extra });
@@ -42,5 +52,74 @@ test('store persists bump role and reminders', () => {
   store.clearBumpRole('g1');
   assert.equal(store.getBumpReminder('g1'), null);
   assert.equal(store.getBumpRole('g1'), null);
+  store.close();
+});
+
+const MIN = 60 * 1000;
+
+test('parseEarlyBump reads the DISBOARD Pro line', () => {
+  const text = 'Bump done! :thumbsup:\nCheck it out on DISBOARD.\n\n⚡ Bumped early with **DISBOARD Pro**! Used 1 accelerated bump (11 of 12 left).';
+  assert.deepEqual(parseEarlyBump(text), { used: 1, left: 11, pool: 12 });
+  assert.equal(parseEarlyBump('Bump done! :thumbsup:'), null);
+});
+
+test('planNextBump uses early bumps first, then 2 hours, then early again as they recharge', () => {
+  const pool = 12;
+  let uses = [];
+  let t = 0;
+  // 12 early bumps, each 30 minutes after the last.
+  for (let i = 0; i < 12; i += 1) {
+    const plan = planNextBump(t, uses, pool);
+    assert.deepEqual(plan, { dueAt: t + EARLY_BUMP_COOLDOWN_MS, early: true }, `bump ${i}`);
+    t = plan.dueAt;
+    uses = reconcileUses([...uses, t], t, pool, pool - 1 - i);
+  }
+  // All 12 used: back to the normal 2-hour bump.
+  const normal = planNextBump(t, uses, pool);
+  assert.equal(normal.early, false);
+  assert.equal(normal.dueAt, t + BUMP_COOLDOWN_MS);
+  assert.equal(normal.rechargeAt, uses[0] + EARLY_BUMP_RECHARGE_MS);
+
+  // Just before the first early bump recharges, the reminder comes at the recharge.
+  const late = uses[0] + EARLY_BUMP_RECHARGE_MS - 60 * MIN;
+  assert.deepEqual(planNextBump(late, uses, pool), { dueAt: uses[0] + EARLY_BUMP_RECHARGE_MS, early: true });
+  // A day later everything has recharged.
+  assert.deepEqual(planNextBump(t + EARLY_BUMP_RECHARGE_MS, uses, pool), {
+    dueAt: t + EARLY_BUMP_RECHARGE_MS + EARLY_BUMP_COOLDOWN_MS,
+    early: true,
+  });
+  // Without Pro it is always 2 hours.
+  assert.deepEqual(planNextBump(0, [], 0), { dueAt: BUMP_COOLDOWN_MS, early: false });
+});
+
+test('reconcileUses trusts the count Disboard reports', () => {
+  // We missed two uses while offline: Disboard says 9 left, we only know of 1.
+  assert.equal(reconcileUses([100], 200, 12, 9).length, 3);
+  // Disboard says more are left than we think: drop the oldest.
+  assert.deepEqual(reconcileUses([100, 150, 180], 200, 12, 10), [150, 180]);
+});
+
+test('Disboard early-bump replies schedule 30-minute reminders', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const store = new StatsStore(':memory:');
+  const sent = [];
+  const channel = { isTextBased: () => true, send: async (m) => sent.push(m.content) };
+  const bumps = setupBumpReminders({ channels: { fetch: async () => channel } }, store);
+  store.setBumpRole('g', 'r');
+  const now = Date.now();
+  bumps.onMessage(
+    disboard({
+      inGuild: () => true,
+      guildId: 'g',
+      channelId: 'c',
+      createdTimestamp: now,
+      interaction: { commandName: 'bump' },
+      embeds: [{ description: 'Bump done!\n⚡ Bumped early with DISBOARD Pro! Used 1 accelerated bump (11 of 12 left).' }],
+    }),
+  );
+  assert.equal(store.getBumpReminder('g').dueAt, now + EARLY_BUMP_COOLDOWN_MS);
+  t.mock.timers.tick(EARLY_BUMP_COOLDOWN_MS);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(sent[0], /<@&r> ⚡ An early bump is ready with DISBOARD Pro \(11 of 12 left\)/);
   store.close();
 });

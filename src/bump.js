@@ -2,9 +2,17 @@
  * Disboard bump reminders.
  *
  * When someone runs Disboard's /bump and Disboard replies "Bump done!", the bot
- * schedules a reminder for two hours later (Disboard's cooldown) that pings a
- * role chosen with /bumpreminder. Pending reminders are stored in SQLite so a
+ * schedules a reminder that pings a role chosen with /bumpreminder for when the
+ * server can be bumped again. Pending reminders are stored in SQLite so a
  * restart does not lose them.
+ *
+ * DISBOARD Pro: a normal bump is ready 2 hours after the last bump, but Pro
+ * servers also get a pool of accelerated bumps (12) usable 30 minutes after the
+ * last bump. Each one recharges 24 hours after it is used. Disboard's reply to
+ * an early bump says "Used 1 accelerated bump (11 of 12 left)", which the bot
+ * reads to track the pool. While early bumps are left it reminds after 30
+ * minutes; once they are used up it reminds at the normal 2 hours, or sooner
+ * if an early bump recharges first.
  */
 import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 
@@ -12,10 +20,13 @@ export const DISBOARD_BOT_ID = '302050872383242240';
 /** Disboard's global /bump command id, used to render a clickable mention. */
 const DISBOARD_BUMP_COMMAND = '</bump:947088344167366698>';
 export const BUMP_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+export const EARLY_BUMP_COOLDOWN_MS = 30 * 60 * 1000;
+export const EARLY_BUMP_RECHARGE_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_EARLY_BUMPS = 12;
 
 export const bumpReminderCommand = new SlashCommandBuilder()
   .setName('bumpreminder')
-  .setDescription('Ping a role two hours after every Disboard /bump.')
+  .setDescription('Ping a role when Disboard /bump is ready again.')
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
   .setDMPermission(false)
   .addSubcommand((sub) =>
@@ -24,6 +35,11 @@ export const bumpReminderCommand = new SlashCommandBuilder()
       .setDescription('Choose the role to ping when the server can be bumped again.')
       .addRoleOption((opt) =>
         opt.setName('role').setDescription('Role to ping').setRequired(true),
+      )
+      .addBooleanOption((opt) =>
+        opt
+          .setName('pro')
+          .setDescription('Use DISBOARD Pro early bumps (30 min) while any are left (default: detect automatically)'),
       ),
   )
   .addSubcommand((sub) =>
@@ -49,14 +65,108 @@ export function isBumpDone(message) {
   return message.interaction?.commandName === 'bump';
 }
 
+/** Text of Disboard's embeds (descriptions and fields). */
+function embedText(message) {
+  return (message.embeds ?? [])
+    .map((e) => [e.description ?? '', ...(e.fields ?? []).map((f) => `${f.name}\n${f.value}`)].join('\n'))
+    .join('\n');
+}
+
+/**
+ * Read "Bumped early with DISBOARD Pro! Used 1 accelerated bump (11 of 12 left)."
+ * Returns { used, left, pool } or null for a normal bump.
+ */
+export function parseEarlyBump(text) {
+  if (!/accelerated bump|bumped early/i.test(text)) return null;
+  const counts = text.match(/(\d+)\s+of\s+(\d+)\s+left/i);
+  if (!counts) return null;
+  const used = Number(text.match(/used\s+(\d+)\s+accelerated/i)?.[1] ?? 1);
+  return { used, left: Number(counts[1]), pool: Number(counts[2]) };
+}
+
+/** Early-bump uses still counting against the pool at `at`, oldest first. */
+export function activeUses(uses, at) {
+  return uses.filter((t) => t > at - EARLY_BUMP_RECHARGE_MS && t <= at).sort((a, b) => a - b);
+}
+
+/** Early bumps available at `at`. */
+export function earlyBumpsLeft(uses, pool, at) {
+  return Math.max(0, pool - activeUses(uses, at).length);
+}
+
+/**
+ * Line our record of early-bump uses up with what Disboard says is left. If we
+ * missed uses (bot offline), assume they were just used; if Disboard reports
+ * more left than we think, drop our oldest records.
+ */
+export function reconcileUses(uses, at, pool, left) {
+  const active = activeUses(uses, at);
+  const diff = pool - active.length - left;
+  if (diff > 0) for (let i = 0; i < diff; i += 1) active.push(at);
+  if (diff < 0) active.splice(0, -diff);
+  return active;
+}
+
+/**
+ * When to remind after a bump at `bumpAt`: 30 minutes later if an early bump
+ * will be available then, else when one recharges if that beats the normal
+ * 2-hour cooldown, else at 2 hours. `pool` is 0 without DISBOARD Pro.
+ */
+export function planNextBump(bumpAt, uses, pool) {
+  const normalAt = bumpAt + BUMP_COOLDOWN_MS;
+  if (!pool) return { dueAt: normalAt, early: false };
+  const earlyAt = bumpAt + EARLY_BUMP_COOLDOWN_MS;
+  const active = activeUses(uses, earlyAt);
+  if (active.length < pool) return { dueAt: earlyAt, early: true };
+  const rechargeAt = active[active.length - pool] + EARLY_BUMP_RECHARGE_MS;
+  if (rechargeAt < normalAt) return { dueAt: rechargeAt, early: true };
+  return { dueAt: normalAt, early: false, rechargeAt };
+}
+
 export function setupBumpReminders(client, store) {
   /** guildId -> timeout handle */
   const timers = new Map();
+  const proKey = (guildId) => `bump:pro:${guildId}`;
+  const usesKey = (guildId) => `bump:early_uses:${guildId}`;
+  const lastKey = (guildId) => `bump:last:${guildId}`;
+
+  /** Size of the early-bump pool, or 0 when DISBOARD Pro is off or not detected yet. */
+  function poolSize(guildId) {
+    const value = store.getMeta(proKey(guildId));
+    return value === 'off' ? 0 : Number(value) || 0;
+  }
+
+  function getUses(guildId) {
+    try {
+      return JSON.parse(store.getMeta(usesKey(guildId)) ?? '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  function saveUses(guildId, uses, now = Date.now()) {
+    store.setMeta(usesKey(guildId), JSON.stringify(activeUses(uses, now)));
+  }
+
+  function lastBumpAt(guildId) {
+    return Number(store.getMeta(lastKey(guildId))) || null;
+  }
 
   function cancel(guildId) {
     const t = timers.get(guildId);
     if (t) clearTimeout(t);
     timers.delete(guildId);
+  }
+
+  /** The reminder text: an early (Pro) bump or a normal one. */
+  function reminderText(guildId, roleId, now) {
+    const pool = poolSize(guildId);
+    const last = lastBumpAt(guildId);
+    if (pool && last && now < last + BUMP_COOLDOWN_MS) {
+      const left = earlyBumpsLeft(getUses(guildId), pool, now);
+      return `<@&${roleId}> ⚡ An early bump is ready with DISBOARD Pro (${left} of ${pool} left)! Run ${DISBOARD_BUMP_COMMAND} 🚀`;
+    }
+    return `<@&${roleId}> The server can be bumped again! Run ${DISBOARD_BUMP_COMMAND} 🚀`;
   }
 
   async function fire(guildId) {
@@ -72,7 +182,7 @@ export function setupBumpReminders(client, store) {
       const channel = await client.channels.fetch(reminder.channelId);
       if (!channel?.isTextBased()) return;
       await channel.send({
-        content: `<@&${roleId}> The server can be bumped again! Run ${DISBOARD_BUMP_COMMAND} 🚀`,
+        content: reminderText(guildId, roleId, Date.now()),
         allowedMentions: { roles: [roleId] },
       });
       console.log(`Sent bump reminder in guild ${guildId}.`);
@@ -85,7 +195,7 @@ export function setupBumpReminders(client, store) {
     cancel(guildId);
     store.setBumpReminder(guildId, channelId, dueAt);
     const delay = Math.max(0, dueAt - Date.now());
-    // setTimeout cannot exceed ~24.8 days; bump cooldowns are 2h so this is fine.
+    // setTimeout cannot exceed ~24.8 days; bump reminders are at most 2h away.
     timers.set(guildId, setTimeout(() => fire(guildId), delay));
   }
 
@@ -104,11 +214,51 @@ export function setupBumpReminders(client, store) {
 
   function onMessage(message) {
     if (!message.inGuild() || !isBumpDone(message)) return;
-    if (!store.getBumpRole(message.guildId)) return; // feature not enabled here
-    const dueAt = message.createdTimestamp + BUMP_COOLDOWN_MS;
-    schedule(message.guildId, message.channelId, dueAt);
+    const guildId = message.guildId;
+    const at = message.createdTimestamp;
+    store.setMeta(lastKey(guildId), String(at));
+
+    let uses = getUses(guildId);
+    const early = parseEarlyBump(embedText(message));
+    if (early) {
+      // Seeing a Pro early bump turns Pro tracking on, unless it was switched off.
+      if (store.getMeta(proKey(guildId)) !== 'off') store.setMeta(proKey(guildId), String(early.pool));
+      uses = reconcileUses([...uses, ...Array(early.used).fill(at)], at, early.pool, early.left);
+      saveUses(guildId, uses, at);
+    }
+
+    if (!store.getBumpRole(guildId)) return; // reminders not enabled here
+    const plan = planNextBump(at, uses, poolSize(guildId));
+    schedule(guildId, message.channelId, plan.dueAt);
     console.log(
-      `Bump detected in guild ${message.guildId}; reminder at ${new Date(dueAt).toISOString()}.`,
+      `Bump detected in guild ${guildId}${early ? ` (early, ${early.left} of ${early.pool} left)` : ''}; ` +
+        `${plan.early ? 'early' : 'normal'} reminder at ${new Date(plan.dueAt).toISOString()}.`,
+    );
+  }
+
+  /** Re-plan a pending reminder after the Pro setting changes. */
+  function replan(guildId) {
+    const pending = store.getBumpReminder(guildId);
+    const last = lastBumpAt(guildId);
+    if (!pending || !last) return null;
+    const plan = planNextBump(last, getUses(guildId), poolSize(guildId));
+    schedule(guildId, pending.channelId, plan.dueAt);
+    return plan.dueAt;
+  }
+
+  function describeTiming(guildId) {
+    const pool = poolSize(guildId);
+    if (!pool) return 'Reminders come 2 hours after each bump (no DISBOARD Pro early bumps).';
+    const now = Date.now();
+    const uses = getUses(guildId);
+    const left = earlyBumpsLeft(uses, pool, now);
+    const active = activeUses(uses, now);
+    const recharge = active.length
+      ? ` Next early bump recharges <t:${Math.floor((active[0] + EARLY_BUMP_RECHARGE_MS) / 1000)}:R>.`
+      : '';
+    return (
+      `DISBOARD Pro: **${left} of ${pool}** early bumps left.${recharge} ` +
+      'Reminders come 30 minutes after a bump while early bumps are left, otherwise after 2 hours.'
     );
   }
 
@@ -118,9 +268,14 @@ export function setupBumpReminders(client, store) {
 
     if (sub === 'set') {
       const role = interaction.options.getRole('role', true);
+      const pro = interaction.options.getBoolean('pro');
       store.setBumpRole(guildId, role.id);
+      if (pro === true) store.setMeta(proKey(guildId), String(poolSize(guildId) || DEFAULT_EARLY_BUMPS));
+      if (pro === false) store.setMeta(proKey(guildId), 'off');
+      const moved = pro === null ? null : replan(guildId);
+      const next = moved ? ` Next reminder <t:${Math.floor(moved / 1000)}:R>.` : '';
       await interaction.reply({
-        content: `✅ I'll ping ${role} two hours after every Disboard bump.`,
+        content: `✅ I'll ping ${role} when the server can be bumped again.\n${describeTiming(guildId)}${next}`,
         allowedMentions: { parse: [] },
       });
       return;
@@ -145,7 +300,7 @@ export function setupBumpReminders(client, store) {
       ? `Next reminder <t:${Math.floor(pending.dueAt / 1000)}:R> in <#${pending.channelId}>.`
       : 'No bump detected yet; the first reminder will follow the next /bump.';
     await interaction.reply({
-      content: `Reminder role: <@&${roleId}>\n${next}`,
+      content: `Reminder role: <@&${roleId}>\n${describeTiming(guildId)}\n${next}`,
       allowedMentions: { parse: [] },
     });
   }

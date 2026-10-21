@@ -20,12 +20,18 @@ Every day, at the time each server picks, it posts a report in that server's sta
 The server the bot was first set up for keeps its midnight report in `STATS_CHANNEL_ID` until you
 change it. A report missed while the bot was offline is posted when it comes back.
 
-It also sends **Disboard bump reminders**: two hours after someone runs Disboard's `/bump`
-successfully, the bot pings a role of your choice in the same channel so the server gets
-bumped again as soon as the cooldown ends.
+It also sends **Disboard bump reminders**: after a successful `/bump`, the bot pings a role of
+your choice in the same channel as soon as the server can be bumped again.
 
-- `/bumpreminder set role:@Role` – choose the role to ping (needs Manage Server)
-- `/bumpreminder status` – show the role and when the next reminder is due
+With **DISBOARD Pro**, the server has 12 early bumps that can be used 30 minutes after the last
+bump, each recharging 24 hours after it's used. The bot reads Disboard's "Used 1 accelerated
+bump (11 of 12 left)" line to keep count, so it reminds **30 minutes** after each bump while
+early bumps are left, then goes back to the normal **2 hours** once they're used up, and back to
+30 minutes as they recharge. Pro is detected from the first early bump it sees.
+
+- `/bumpreminder set role:@Role` – choose the role to ping (needs Manage Server). Add `pro:True`
+  to turn early-bump reminders on before the first early bump, or `pro:False` for 2 hours only.
+- `/bumpreminder status` – show the role, early bumps left and when the next reminder is due
 - `/bumpreminder disable` – turn reminders off
 
 Pending reminders are saved to the database, so a restart does not lose them.
