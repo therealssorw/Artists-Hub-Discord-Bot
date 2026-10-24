@@ -14,7 +14,7 @@
  * minutes; once they are used up it reminds at the normal 2 hours, or sooner
  * if an early bump recharges first.
  */
-import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+import { EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 
 export const DISBOARD_BOT_ID = '302050872383242240';
 /** Disboard's global /bump command id, used to render a clickable mention. */
@@ -66,7 +66,7 @@ export function isBumpDone(message) {
 }
 
 /** Text of Disboard's embeds (descriptions and fields). */
-function embedText(message) {
+export function embedText(message) {
   return (message.embeds ?? [])
     .map((e) => [e.description ?? '', ...(e.fields ?? []).map((f) => `${f.name}\n${f.value}`)].join('\n'))
     .join('\n');
@@ -121,6 +121,73 @@ export function planNextBump(bumpAt, uses, pool) {
   const rechargeAt = active[active.length - pool] + EARLY_BUMP_RECHARGE_MS;
   if (rechargeAt < normalAt) return { dueAt: rechargeAt, early: true };
   return { dueAt: normalAt, early: false, rechargeAt };
+}
+
+/** Who ran the /bump that Disboard is replying to, or null. */
+export function bumperId(message) {
+  return message.interactionMetadata?.user?.id ?? message.interaction?.user?.id ?? null;
+}
+
+/** Add a successful bump to the leaderboard (no-op if already recorded). */
+export function recordBumpFrom(store, message) {
+  const userId = bumperId(message);
+  if (!userId) return false;
+  return store.recordBump({
+    messageId: message.id,
+    guildId: message.guildId,
+    userId,
+    at: message.createdTimestamp,
+    early: Boolean(parseEarlyBump(embedText(message))),
+  });
+}
+
+const PERIODS = {
+  all: { label: 'All time', ms: null },
+  month: { label: 'Last 30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+  week: { label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+};
+const PAGE_SIZE = 10;
+
+export const bumpLeaderboardCommand = new SlashCommandBuilder()
+  .setName('bumpleaderboard')
+  .setDescription('Who has bumped the server the most with Disboard.')
+  .setDMPermission(false)
+  .addStringOption((opt) =>
+    opt
+      .setName('period')
+      .setDescription('Time range (default: all time)')
+      .addChoices(
+        { name: 'All time', value: 'all' },
+        { name: 'Last 30 days', value: 'month' },
+        { name: 'Last 7 days', value: 'week' },
+      ),
+  )
+  .addIntegerOption((opt) => opt.setName('page').setDescription('Page number (default: 1)').setMinValue(1));
+
+/** The /bumpleaderboard embed. */
+export function buildBumpLeaderboard(store, { guildId, guildName, userId, period = 'all', page = 1, now = Date.now() }) {
+  const { label, ms } = PERIODS[period] ?? PERIODS.all;
+  const since = ms ? now - ms : 0;
+  const total = store.getBumperCount(guildId, since);
+  const embed = new EmbedBuilder().setColor(0x5ab8b1).setTitle(`🚀 ${guildName} bump leaderboard · ${label}`);
+  if (!total) {
+    return embed.setDescription(`No bumps yet. Run ${DISBOARD_BUMP_COMMAND} to get on the board!`);
+  }
+  const pages = Math.ceil(total / PAGE_SIZE);
+  const current = Math.min(Math.max(1, page), pages);
+  const rows = store.getBumpLeaderboard(guildId, since, PAGE_SIZE, (current - 1) * PAGE_SIZE);
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = rows.map((row, i) => {
+    const position = (current - 1) * PAGE_SIZE + i + 1;
+    const badge = medals[position - 1] ?? `**${position}.**`;
+    const early = row.early ? ` (⚡ ${row.early} early)` : '';
+    return `${badge} <@${row.userId}> · **${row.bumps}** bump${row.bumps === 1 ? '' : 's'}${early}`;
+  });
+  const mine = store.getUserBumps(guildId, userId, since);
+  const you = mine.bumps
+    ? `You're #${mine.rank} with ${mine.bumps} bump${mine.bumps === 1 ? '' : 's'}`
+    : 'Bump the server to get on the board';
+  return embed.setDescription(lines.join('\n')).setFooter({ text: `Page ${current}/${pages} · ${you}` });
 }
 
 export function setupBumpReminders(client, store) {
@@ -217,6 +284,11 @@ export function setupBumpReminders(client, store) {
     const guildId = message.guildId;
     const at = message.createdTimestamp;
     store.setMeta(lastKey(guildId), String(at));
+    try {
+      recordBumpFrom(store, message);
+    } catch (error) {
+      console.error('Failed to record bump for the leaderboard:', error);
+    }
 
     let uses = getUses(guildId);
     const early = parseEarlyBump(embedText(message));
@@ -262,7 +334,19 @@ export function setupBumpReminders(client, store) {
     );
   }
 
+  async function onLeaderboard(interaction) {
+    const embed = buildBumpLeaderboard(store, {
+      guildId: interaction.guildId,
+      guildName: interaction.guild.name,
+      userId: interaction.user.id,
+      period: interaction.options.getString('period') ?? 'all',
+      page: interaction.options.getInteger('page') ?? 1,
+    });
+    await interaction.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+  }
+
   async function onCommand(interaction) {
+    if (interaction.commandName === 'bumpleaderboard') return onLeaderboard(interaction);
     const guildId = interaction.guildId;
     const sub = interaction.options.getSubcommand();
 

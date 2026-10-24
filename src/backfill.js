@@ -12,6 +12,7 @@
  */
 import { ChannelType, Client, GatewayIntentBits } from 'discord.js';
 
+import { isBumpDone, recordBumpFrom } from './bump.js';
 import { config } from './config.js';
 import { claimLegacyStats } from './dailyreport.js';
 import { StatsStore } from './db.js';
@@ -23,7 +24,10 @@ const fromDay = shiftDay(today, -(days - 1));
 const cutoffMs = Date.now() - days * 86_400_000 - 86_400_000; // one extra day of slack for tz offset
 
 const store = new StatsStore(config.databasePath);
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+// Message Content lets us read Disboard's replies, so past bumps can go on the bump leaderboard.
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent],
+});
 
 /** counts[day][userId] = number of messages, for the server being scanned */
 let counts = {};
@@ -40,6 +44,7 @@ function resetTallies() {
 let totalMessages = 0;
 
 let scanned = 0;
+let bumpsFound = 0;
 
 async function scanChannel(channel) {
   let before;
@@ -56,6 +61,7 @@ async function scanChannel(channel) {
     for (const message of batch.values()) {
       if (message.createdTimestamp < cutoffMs) return;
       scanned += 1;
+      if (message.inGuild() && isBumpDone(message) && recordBumpFrom(store, message)) bumpsFound += 1;
       if (message.author.bot || message.system) continue;
       const day = dayKey(message.createdAt, config.timezone);
       if (!counts[day]) continue;
@@ -150,6 +156,7 @@ client.once('clientReady', async () => {
     }
 
     console.log(`Done. Scanned ${scanned} messages; stored ${totalMessages} user messages across ${days} days.`);
+    console.log(`Added ${bumpsFound} past Disboard bump(s) to the bump leaderboard.`);
   } catch (error) {
     console.error('Backfill failed:', error);
     process.exitCode = 1;

@@ -32,6 +32,9 @@ early bumps are left, then goes back to the normal **2 hours** once they're used
 - `/bumpreminder set role:@Role` – choose the role to ping (needs Manage Server). Add `pro:True`
   to turn early-bump reminders on before the first early bump, or `pro:False` for 2 hours only.
 - `/bumpreminder status` – show the role, early bumps left and when the next reminder is due
+- `/bumpleaderboard [period] [page]` – who has bumped the most (all time, last 30 days or last 7
+  days), with early Pro bumps counted separately. Anyone can use it. Running the backfill also
+  adds bumps from the last 60 days of history.
 - `/bumpreminder disable` – turn reminders off
 
 Pending reminders are saved to the database, so a restart does not lose them.
@@ -169,7 +172,7 @@ split the last 60 days correctly between servers.
 
 - `src/index.js` – Discord client, events and slash command routing.
 - `src/dailyreport.js` – `/stats` and the per-server daily report schedule.
-- `src/bump.js` – Disboard bump detection, the `/bumpreminder` command, and reminder timers.
+- `src/bump.js` – Disboard bump detection, `/bumpreminder`, reminder timers and `/bumpleaderboard`.
 - `src/levels.js` – XP, levels, role rewards, `/rank`, `/leaderboard` and `/levels`.
 - `src/canvas.js` – shared drawing helpers for the rank card and milestone images.
 - `src/links.js` – the link gate for new members.

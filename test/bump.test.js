@@ -4,12 +4,14 @@ import { test } from 'node:test';
 import {
   BUMP_COOLDOWN_MS,
   DISBOARD_BOT_ID,
+  buildBumpLeaderboard,
   EARLY_BUMP_COOLDOWN_MS,
   EARLY_BUMP_RECHARGE_MS,
   isBumpDone,
   parseEarlyBump,
   planNextBump,
   reconcileUses,
+  recordBumpFrom,
   setupBumpReminders,
 } from '../src/bump.js';
 import { StatsStore } from '../src/db.js';
@@ -121,5 +123,38 @@ test('Disboard early-bump replies schedule 30-minute reminders', async (t) => {
   t.mock.timers.tick(EARLY_BUMP_COOLDOWN_MS);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(sent[0], /<@&r> ⚡ An early bump is ready with DISBOARD Pro \(11 of 12 left\)/);
+  store.close();
+});
+
+test('bumps are recorded once and ranked on the bump leaderboard', () => {
+  const store = new StatsStore(':memory:');
+  const bump = (id, user, at, early = false) =>
+    recordBumpFrom(store, {
+      id,
+      guildId: 'g',
+      createdTimestamp: at,
+      interactionMetadata: { user: { id: user } },
+      embeds: [{ description: early ? 'Bump done! Used 1 accelerated bump (11 of 12 left).' : 'Bump done!' }],
+    });
+  const day = 24 * 60 * 60 * 1000;
+  const now = 100 * day;
+  assert.equal(bump('m1', 'alice', now - 40 * day), true);
+  assert.equal(bump('m1', 'alice', now - 40 * day), false); // same Disboard reply again
+  bump('m2', 'bob', now - 2 * day, true);
+  bump('m3', 'bob', now - day);
+  bump('m4', 'cara', now - 3 * day);
+  assert.equal(recordBumpFrom(store, { id: 'm5', guildId: 'g', createdTimestamp: now, embeds: [] }), false); // no bumper
+
+  const all = buildBumpLeaderboard(store, { guildId: 'g', guildName: 'Artists Hub', userId: 'cara', now }).toJSON();
+  assert.equal(all.title, '🚀 Artists Hub bump leaderboard · All time');
+  assert.equal(all.description, '🥇 <@bob> · **2** bumps (⚡ 1 early)\n🥈 <@alice> · **1** bump\n🥉 <@cara> · **1** bump');
+  assert.equal(all.footer.text, "Page 1/1 · You're #2 with 1 bump");
+
+  const month = buildBumpLeaderboard(store, { guildId: 'g', guildName: 'Artists Hub', userId: 'alice', period: 'month', now }).toJSON();
+  assert.doesNotMatch(month.description, /alice/);
+  assert.equal(month.footer.text, 'Page 1/1 · Bump the server to get on the board');
+
+  const empty = buildBumpLeaderboard(store, { guildId: 'other', guildName: 'X', userId: 'a', now }).toJSON();
+  assert.match(empty.description, /No bumps yet/);
   store.close();
 });

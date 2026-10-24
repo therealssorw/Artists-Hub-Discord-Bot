@@ -1,6 +1,6 @@
 import { Client, Events, GatewayCloseCodes, GatewayIntentBits, MessageFlags } from 'discord.js';
 
-import { bumpReminderCommand, setupBumpReminders } from './bump.js';
+import { bumpLeaderboardCommand, bumpReminderCommand, setupBumpReminders } from './bump.js';
 import { config } from './config.js';
 import { claimLegacyStats, setupDailyReports, statsCommand } from './dailyreport.js';
 import { StatsStore } from './db.js';
@@ -46,6 +46,7 @@ async function registerCommands() {
   const commands = [
     statsCommand,
     bumpReminderCommand,
+    bumpLeaderboardCommand,
     remindCommand,
     remindersCommand,
     milestoneCommand,
@@ -179,11 +180,11 @@ function registerHandlers(c) {
       return;
     }
 
-    if (interaction.commandName === 'bumpreminder') {
+    if (interaction.commandName === 'bumpreminder' || interaction.commandName === 'bumpleaderboard') {
       try {
         await bumps.onCommand(interaction);
       } catch (error) {
-        console.error('Failed to handle /bumpreminder:', error);
+        console.error(`Failed to handle /${interaction.commandName}:`, error);
       }
       return;
     }

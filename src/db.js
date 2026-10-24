@@ -95,6 +95,15 @@ export class StatsStore {
       );
       CREATE INDEX IF NOT EXISTS idx_levels_rank ON levels (guild_id, xp DESC);
 
+      CREATE TABLE IF NOT EXISTS bumps (
+        message_id TEXT PRIMARY KEY, -- Disboard's reply, so backfill and live tracking never double count
+        guild_id   TEXT    NOT NULL,
+        user_id    TEXT    NOT NULL,
+        at         INTEGER NOT NULL,
+        early      INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_bumps_guild ON bumps (guild_id, at);
+
       CREATE TABLE IF NOT EXISTS level_rewards (
         guild_id TEXT    NOT NULL,
         role_id  TEXT    NOT NULL,
@@ -200,6 +209,24 @@ export class StatsStore {
           last_xp_at = MAX(last_xp_at, @at)
       `),
       rankOf: this.db.prepare('SELECT COUNT(*) + 1 AS rank FROM levels WHERE guild_id = ? AND xp > ?'),
+      addBump: this.db.prepare(`
+        INSERT OR IGNORE INTO bumps (message_id, guild_id, user_id, at, early)
+        VALUES (@messageId, @guildId, @userId, @at, @early)
+      `),
+      bumpLeaderboard: this.db.prepare(`
+        SELECT user_id AS userId, COUNT(*) AS bumps, SUM(early) AS early FROM bumps
+        WHERE guild_id = ? AND at >= ?
+        GROUP BY user_id ORDER BY bumps DESC, MIN(at) LIMIT ? OFFSET ?
+      `),
+      bumperCount: this.db.prepare('SELECT COUNT(DISTINCT user_id) AS count FROM bumps WHERE guild_id = ? AND at >= ?'),
+      userBumps: this.db.prepare(
+        'SELECT COUNT(*) AS bumps, COALESCE(SUM(early), 0) AS early FROM bumps WHERE guild_id = ? AND user_id = ? AND at >= ?',
+      ),
+      bumpRank: this.db.prepare(`
+        SELECT COUNT(*) + 1 AS rank FROM (
+          SELECT COUNT(*) AS bumps FROM bumps WHERE guild_id = ? AND at >= ? GROUP BY user_id
+        ) WHERE bumps > ?
+      `),
       leaderboard: this.db.prepare(`
         SELECT user_id AS userId, xp, messages FROM levels
         WHERE guild_id = ? AND xp > 0 ORDER BY xp DESC, user_id LIMIT ? OFFSET ?
@@ -483,6 +510,28 @@ export class StatsStore {
   /** 1-based leaderboard position for a member with `xp`. */
   getRank(guildId, xp) {
     return this.stmts.rankOf.get(guildId, xp).rank;
+  }
+
+  // ----- Bump leaderboard -----
+
+  /** Record a successful Disboard bump. Returns false if it was already recorded. */
+  recordBump({ messageId, guildId, userId, at, early = false }) {
+    return this.stmts.addBump.run({ messageId, guildId, userId, at, early: early ? 1 : 0 }).changes > 0;
+  }
+
+  /** A page of [{ userId, bumps, early }] since `since` (ms), most bumps first. */
+  getBumpLeaderboard(guildId, since = 0, limit = 10, offset = 0) {
+    return this.stmts.bumpLeaderboard.all(guildId, since, limit, offset);
+  }
+
+  getBumperCount(guildId, since = 0) {
+    return this.stmts.bumperCount.get(guildId, since).count;
+  }
+
+  /** { bumps, early, rank } for one member since `since`. */
+  getUserBumps(guildId, userId, since = 0) {
+    const { bumps, early } = this.stmts.userBumps.get(guildId, userId, since);
+    return { bumps, early, rank: this.stmts.bumpRank.get(guildId, since, bumps).rank };
   }
 
   /** A page of [{ userId, xp, messages }], most XP first. */
