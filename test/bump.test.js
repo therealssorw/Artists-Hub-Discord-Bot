@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import {
   BUMP_COOLDOWN_MS,
+  BUMP_REPEAT_MS,
+  DEFAULT_QUIET_HOURS,
   DISBOARD_BOT_ID,
   buildBumpLeaderboard,
   EARLY_BUMP_COOLDOWN_MS,
@@ -10,11 +12,13 @@ import {
   isBumpDone,
   parseEarlyBump,
   planNextBump,
+  quietUntil,
   reconcileUses,
   recordBumpFrom,
   setupBumpReminders,
 } from '../src/bump.js';
 import { StatsStore } from '../src/db.js';
+import { zonedTime } from '../src/when.js';
 
 const disboard = (extra) => ({ author: { id: DISBOARD_BOT_ID }, embeds: [], ...extra });
 
@@ -102,7 +106,8 @@ test('reconcileUses trusts the count Disboard reports', () => {
 });
 
 test('Disboard early-bump replies schedule 30-minute reminders', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // A Saturday, so weekday quiet hours never move the reminder whenever the tests run.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.UTC(2026, 9, 31, 16) });
   const store = new StatsStore(':memory:');
   const sent = [];
   const channel = { isTextBased: () => true, send: async (m) => sent.push(m.content) };
@@ -156,5 +161,91 @@ test('bumps are recorded once and ranked on the bump leaderboard', () => {
 
   const empty = buildBumpLeaderboard(store, { guildId: 'other', guildName: 'X', userId: 'a', now }).toJSON();
   assert.match(empty.description, /No bumps yet/);
+  store.close();
+});
+
+const tz = 'America/New_York';
+const et = (y, mo, d, h, mi = 0) => zonedTime(y, mo, d, h, mi, 0, tz);
+
+test('quietUntil covers weekdays 7am–3pm Eastern only', () => {
+  // Tuesday Oct 27, 2026.
+  assert.equal(quietUntil(et(2026, 10, 27, 6, 59), DEFAULT_QUIET_HOURS, tz), null);
+  assert.equal(quietUntil(et(2026, 10, 27, 7), DEFAULT_QUIET_HOURS, tz), et(2026, 10, 27, 15));
+  assert.equal(quietUntil(et(2026, 10, 27, 14, 30), DEFAULT_QUIET_HOURS, tz), et(2026, 10, 27, 15));
+  assert.equal(quietUntil(et(2026, 10, 27, 15), DEFAULT_QUIET_HOURS, tz), null);
+  assert.equal(quietUntil(et(2026, 10, 27, 23), DEFAULT_QUIET_HOURS, tz), null);
+  // Saturday and Sunday ping any time.
+  assert.equal(quietUntil(et(2026, 10, 31, 10), DEFAULT_QUIET_HOURS, tz), null);
+  assert.equal(quietUntil(et(2026, 11, 1, 10), DEFAULT_QUIET_HOURS, tz), null);
+  assert.equal(quietUntil(et(2026, 10, 27, 10), null, tz), null);
+  // Overnight windows belong to the weekday they start on.
+  const night = { start: '23:00', end: '07:00' };
+  assert.equal(quietUntil(et(2026, 10, 27, 23, 30), night, tz), et(2026, 10, 28, 7));
+  assert.equal(quietUntil(et(2026, 10, 28, 3), night, tz), et(2026, 10, 28, 7));
+  assert.equal(quietUntil(et(2026, 11, 1, 3), night, tz), null); // Sunday morning: Saturday night is not a weekday
+});
+
+test('unanswered reminders repeat every 30 minutes and stop when someone bumps', async (t) => {
+  // Saturday, so quiet hours do not apply.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: et(2026, 10, 31, 12) });
+  const store = new StatsStore(':memory:');
+  const sent = [];
+  const channel = { isTextBased: () => true, send: async (m) => sent.push(m.content) };
+  const bumps = setupBumpReminders({ channels: { fetch: async () => channel } }, store);
+  store.setBumpRole('g', 'r');
+  const bump = () =>
+    bumps.onMessage(
+      disboard({
+        inGuild: () => true,
+        guildId: 'g',
+        channelId: 'c',
+        createdTimestamp: Date.now(),
+        interaction: { commandName: 'bump' },
+        embeds: [{ description: 'Bump done!' }],
+      }),
+    );
+  const advance = async (ms) => {
+    t.mock.timers.tick(ms);
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  bump();
+  await advance(BUMP_COOLDOWN_MS);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /^<@&r> The server can be bumped again!/);
+  await advance(BUMP_REPEAT_MS);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /^<@&r> ⏰ Still no bump! The server can be bumped again!/);
+  await advance(BUMP_REPEAT_MS);
+  assert.equal(sent.length, 3);
+
+  bump(); // someone bumps: the next ping is a fresh reminder 2 hours later
+  await advance(BUMP_REPEAT_MS);
+  assert.equal(sent.length, 3);
+  await advance(BUMP_COOLDOWN_MS - BUMP_REPEAT_MS);
+  assert.equal(sent.length, 4);
+  assert.doesNotMatch(sent[3], /Still no bump/);
+  bumps.cancel('g');
+  store.close();
+});
+
+test('reminders due in weekday quiet hours wait until they end', async (t) => {
+  // Tuesday 6:00 AM: the 2-hour reminder would land at 8:00 AM, inside quiet hours.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: et(2026, 10, 27, 6) });
+  const store = new StatsStore(':memory:');
+  const bumps = setupBumpReminders({ channels: { fetch: async () => null } }, store);
+  store.setBumpRole('g', 'r');
+  bumps.onMessage(
+    disboard({
+      inGuild: () => true,
+      guildId: 'g',
+      channelId: 'c',
+      createdTimestamp: Date.now(),
+      interaction: { commandName: 'bump' },
+      embeds: [{ description: 'Bump done!' }],
+    }),
+  );
+  assert.equal(store.getBumpReminder('g').dueAt, et(2026, 10, 27, 15));
+  bumps.cancel('g');
   store.close();
 });

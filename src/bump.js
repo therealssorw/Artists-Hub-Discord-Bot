@@ -13,8 +13,17 @@
  * reads to track the pool. While early bumps are left it reminds after 30
  * minutes; once they are used up it reminds at the normal 2 hours, or sooner
  * if an early bump recharges first.
+ *
+ * If nobody bumps after a reminder, it pings again every 30 minutes until
+ * someone does. On weekdays it stays quiet during quiet hours (7 AM–3 PM
+ * Eastern by default, changeable with /bumpreminder quiethours); a reminder
+ * due then waits until quiet hours end. Weekends have no quiet hours.
  */
-import { EmbedBuilder, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+import { EmbedBuilder, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+
+import { config } from './config.js';
+import { formatReportTime, parseReportTime } from './dailyreport.js';
+import { wallParts, zonedTime } from './when.js';
 
 export const DISBOARD_BOT_ID = '302050872383242240';
 /** Disboard's global /bump command id, used to render a clickable mention. */
@@ -23,6 +32,10 @@ export const BUMP_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 export const EARLY_BUMP_COOLDOWN_MS = 30 * 60 * 1000;
 export const EARLY_BUMP_RECHARGE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_EARLY_BUMPS = 12;
+/** How long after an unanswered reminder to ping again. */
+export const BUMP_REPEAT_MS = 30 * 60 * 1000;
+/** Default weekday quiet hours (no pings), in TIMEZONE. */
+export const DEFAULT_QUIET_HOURS = { start: '07:00', end: '15:00' };
 
 export const bumpReminderCommand = new SlashCommandBuilder()
   .setName('bumpreminder')
@@ -44,6 +57,14 @@ export const bumpReminderCommand = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub.setName('disable').setDescription('Stop sending bump reminders.'),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName('quiethours')
+      .setDescription('Weekday hours with no bump pings (Eastern time; default 7am–3pm).')
+      .addStringOption((opt) => opt.setName('start').setDescription('Quiet from, e.g. 7am').setMaxLength(20))
+      .addStringOption((opt) => opt.setName('end').setDescription('Quiet until, e.g. 3pm').setMaxLength(20))
+      .addBooleanOption((opt) => opt.setName('off').setDescription('Turn quiet hours off (ping any time)')),
   )
   .addSubcommand((sub) =>
     sub.setName('status').setDescription('Show the reminder role and the next reminder time.'),
@@ -123,6 +144,29 @@ export function planNextBump(bumpAt, uses, pool) {
   return { dueAt: normalAt, early: false, rechargeAt };
 }
 
+/**
+ * If `at` falls in weekday quiet hours, when they end; otherwise null.
+ * `quiet` is { start, end } as "HH:MM" (end may be past midnight) or null.
+ */
+export function quietUntil(at, quiet, timezone) {
+  if (!quiet) return null;
+  const p = wallParts(at, timezone);
+  const [sh, sm] = quiet.start.split(':').map(Number);
+  const [eh, em] = quiet.end.split(':').map(Number);
+  const now = p.hour * 60 + p.minute;
+  const start = sh * 60 + sm;
+  const end = eh * 60 + em;
+  const weekday = (d) => d >= 1 && d <= 5;
+  if (start < end) {
+    if (!weekday(p.weekday) || now < start || now >= end) return null;
+    return zonedTime(p.year, p.month, p.day, eh, em, 0, timezone);
+  }
+  // Overnight window, e.g. 11pm–7am: it belongs to the weekday it starts on.
+  if (now >= start && weekday(p.weekday)) return zonedTime(p.year, p.month, p.day + 1, eh, em, 0, timezone);
+  if (now < end && weekday((p.weekday + 6) % 7)) return zonedTime(p.year, p.month, p.day, eh, em, 0, timezone);
+  return null;
+}
+
 /** Who ran the /bump that Disboard is replying to, or null. */
 export function bumperId(message) {
   return message.interactionMetadata?.user?.id ?? message.interaction?.user?.id ?? null;
@@ -196,6 +240,22 @@ export function setupBumpReminders(client, store) {
   const proKey = (guildId) => `bump:pro:${guildId}`;
   const usesKey = (guildId) => `bump:early_uses:${guildId}`;
   const lastKey = (guildId) => `bump:last:${guildId}`;
+  const quietKey = (guildId) => `bump:quiet:${guildId}`;
+  const nagsKey = (guildId) => `bump:nags:${guildId}`;
+
+  /** Weekday quiet hours { start, end }, or null when turned off. */
+  function quietHours(guildId) {
+    const value = store.getMeta(quietKey(guildId));
+    if (value === 'off') return null;
+    if (!value) return DEFAULT_QUIET_HOURS;
+    const [start, end] = value.split('-');
+    return { start, end };
+  }
+
+  /** `at`, or the end of quiet hours if `at` falls inside them. */
+  function outsideQuiet(guildId, at) {
+    return quietUntil(at, quietHours(guildId), config.timezone) ?? at;
+  }
 
   /** Size of the early-bump pool, or 0 when DISBOARD Pro is off or not detected yet. */
   function poolSize(guildId) {
@@ -225,15 +285,16 @@ export function setupBumpReminders(client, store) {
     timers.delete(guildId);
   }
 
-  /** The reminder text: an early (Pro) bump or a normal one. */
-  function reminderText(guildId, roleId, now) {
+  /** The reminder text: an early (Pro) bump or a normal one, and whether it is a repeat. */
+  function reminderText(guildId, roleId, now, repeat = false) {
+    const nudge = repeat ? '⏰ Still no bump! ' : '';
     const pool = poolSize(guildId);
     const last = lastBumpAt(guildId);
     if (pool && last && now < last + BUMP_COOLDOWN_MS) {
       const left = earlyBumpsLeft(getUses(guildId), pool, now);
-      return `<@&${roleId}> ⚡ An early bump is ready with DISBOARD Pro (${left} of ${pool} left)! Run ${DISBOARD_BUMP_COMMAND} 🚀`;
+      return `<@&${roleId}> ${nudge}⚡ An early bump is ready with DISBOARD Pro (${left} of ${pool} left)! Run ${DISBOARD_BUMP_COMMAND} 🚀`;
     }
-    return `<@&${roleId}> The server can be bumped again! Run ${DISBOARD_BUMP_COMMAND} 🚀`;
+    return `<@&${roleId}> ${nudge}The server can be bumped again! Run ${DISBOARD_BUMP_COMMAND} 🚀`;
   }
 
   async function fire(guildId) {
@@ -245,21 +306,35 @@ export function setupBumpReminders(client, store) {
     const roleId = store.getBumpRole(guildId);
     if (!roleId) return;
 
+    // Quiet hours may have started (or been changed) since this was scheduled.
+    const now = Date.now();
+    const quietEnd = quietUntil(now, quietHours(guildId), config.timezone);
+    if (quietEnd) {
+      schedule(guildId, reminder.channelId, quietEnd);
+      return;
+    }
+
+    const nags = Number(store.getMeta(nagsKey(guildId))) || 0;
     try {
       const channel = await client.channels.fetch(reminder.channelId);
       if (!channel?.isTextBased()) return;
       await channel.send({
-        content: reminderText(guildId, roleId, Date.now()),
+        content: reminderText(guildId, roleId, now, nags > 0),
         allowedMentions: { roles: [roleId] },
       });
-      console.log(`Sent bump reminder in guild ${guildId}.`);
+      console.log(`Sent bump reminder${nags ? ` (repeat ${nags})` : ''} in guild ${guildId}.`);
     } catch (error) {
       console.error(`Failed to send bump reminder for guild ${guildId}:`, error);
+      return;
     }
+    // Ping again if nobody bumps; a bump replaces this with the next real reminder.
+    store.setMeta(nagsKey(guildId), String(nags + 1));
+    schedule(guildId, reminder.channelId, now + BUMP_REPEAT_MS);
   }
 
   function schedule(guildId, channelId, dueAt) {
     cancel(guildId);
+    dueAt = outsideQuiet(guildId, dueAt);
     store.setBumpReminder(guildId, channelId, dueAt);
     const delay = Math.max(0, dueAt - Date.now());
     // setTimeout cannot exceed ~24.8 days; bump reminders are at most 2h away.
@@ -284,6 +359,7 @@ export function setupBumpReminders(client, store) {
     const guildId = message.guildId;
     const at = message.createdTimestamp;
     store.setMeta(lastKey(guildId), String(at));
+    store.deleteMeta(nagsKey(guildId));
     try {
       recordBumpFrom(store, message);
     } catch (error) {
@@ -334,6 +410,16 @@ export function setupBumpReminders(client, store) {
     );
   }
 
+  function describeQuiet(guildId) {
+    const quiet = quietHours(guildId);
+    if (!quiet) return '🔔 No quiet hours: reminders can ping any time. Unanswered reminders repeat every 30 minutes.';
+    return (
+      `🤫 Quiet hours: weekdays ${formatReportTime(quiet.start)}–${formatReportTime(quiet.end)} (${config.timezone}). ` +
+      'Reminders due then wait until quiet hours end; weekends ping any time. ' +
+      'Unanswered reminders repeat every 30 minutes.'
+    );
+  }
+
   async function onLeaderboard(interaction) {
     const embed = buildBumpLeaderboard(store, {
       guildId: interaction.guildId,
@@ -373,6 +459,28 @@ export function setupBumpReminders(client, store) {
       return;
     }
 
+    if (sub === 'quiethours') {
+      if (interaction.options.getBoolean('off')) {
+        store.setMeta(quietKey(guildId), 'off');
+      } else {
+        const current = quietHours(guildId) ?? DEFAULT_QUIET_HOURS;
+        const startInput = interaction.options.getString('start');
+        const endInput = interaction.options.getString('end');
+        const start = startInput ? parseReportTime(startInput) : current.start;
+        const end = endInput ? parseReportTime(endInput) : current.end;
+        if (!start || !end || start === end) {
+          await interaction.reply({ content: '⚠️ I couldn’t read those times. Try `start:7am end:3pm`.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        store.setMeta(quietKey(guildId), `${start}-${end}`);
+      }
+      // Move a pending reminder out of the new quiet hours.
+      const pending = store.getBumpReminder(guildId);
+      if (pending) schedule(guildId, pending.channelId, pending.dueAt);
+      await interaction.reply(describeQuiet(guildId));
+      return;
+    }
+
     // status
     const roleId = store.getBumpRole(guildId);
     if (!roleId) {
@@ -384,7 +492,7 @@ export function setupBumpReminders(client, store) {
       ? `Next reminder <t:${Math.floor(pending.dueAt / 1000)}:R> in <#${pending.channelId}>.`
       : 'No bump detected yet; the first reminder will follow the next /bump.';
     await interaction.reply({
-      content: `Reminder role: <@&${roleId}>\n${describeTiming(guildId)}\n${next}`,
+      content: `Reminder role: <@&${roleId}>\n${describeTiming(guildId)}\n${describeQuiet(guildId)}\n${next}`,
       allowedMentions: { parse: [] },
     });
   }
