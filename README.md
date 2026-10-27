@@ -73,6 +73,15 @@ roles and `@everyone`/`@here` need the **Mention @everyone** permission.
 Reminders survive restarts; any that came due while the bot was offline are sent on startup,
 marked late.
 
+## Join pings
+
+`/joinping set role:@Owner channel:#mod-chat` pings that role whenever someone joins (needs
+Manage Server; the channel defaults to the one you run it in). The ping says who joined, which
+member number they are and when their account was made, with a ⚠️ for accounts under a week
+old. Bots are skipped. `/joinping status` and `/joinping disable` manage it per server. If the
+role isn't set to "Allow anyone to @mention this role", the bot needs **Mention @everyone** in
+that channel.
+
 ## Levels
 
 Members earn **15–25 XP per message**, at most once a minute, so spamming doesn't help. Levels
@@ -181,6 +190,7 @@ split the last 60 days correctly between servers.
 - `src/bump.js` – Disboard bump detection, `/bumpreminder`, reminder timers and `/bumpleaderboard`.
 - `src/levels.js` – XP, levels, role rewards, `/rank`, `/leaderboard` and `/levels`.
 - `src/canvas.js` – shared drawing helpers for the rank card and milestone images.
+- `src/joinping.js` – `/joinping`: ping a role when someone joins.
 - `src/links.js` – the link gate for new members.
 - `src/milestone.js` – member milestone snapshots and `/milestone preview`.
 - `src/reminders.js` – the `/remind` and `/reminders` commands; `src/when.js` parses their times.

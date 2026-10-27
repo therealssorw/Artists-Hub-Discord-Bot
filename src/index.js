@@ -5,6 +5,7 @@ import { config } from './config.js';
 import { claimLegacyStats, setupDailyReports, statsCommand } from './dailyreport.js';
 import { StatsStore } from './db.js';
 import { setupDungeonArrivals } from './dungeon.js';
+import { joinPingCommand, setupJoinPings } from './joinping.js';
 import { leaderboardCommand, levelsCommand, rankCommand, setupLevels } from './levels.js';
 import { setupLinkGate } from './links.js';
 import { milestoneCommand, setupMilestones } from './milestone.js';
@@ -32,6 +33,7 @@ let reminders;
 let milestones;
 let levels;
 let dailyReports;
+let joinPings;
 
 /** Should this message be counted? */
 function shouldCount(message) {
@@ -50,6 +52,7 @@ async function registerCommands() {
     remindCommand,
     remindersCommand,
     milestoneCommand,
+    joinPingCommand,
     rankCommand,
     leaderboardCommand,
     levelsCommand,
@@ -74,6 +77,7 @@ function createClient(intents) {
   reminders = setupReminders(c, store);
   milestones = setupMilestones(c, store);
   levels = setupLevels(c, store);
+  joinPings = setupJoinPings(c, store);
   dailyReports?.stop();
   dailyReports = setupDailyReports(c, store);
   registerHandlers(c);
@@ -170,6 +174,15 @@ function registerHandlers(c) {
       return;
     }
 
+    if (interaction.commandName === 'joinping') {
+      try {
+        await joinPings.onCommand(interaction);
+      } catch (error) {
+        console.error('Failed to handle /joinping:', error);
+      }
+      return;
+    }
+
     if (interaction.commandName === 'milestone') {
       try {
         await milestones.onCommand(interaction);
@@ -202,6 +215,7 @@ function registerHandlers(c) {
 
   c.on(Events.GuildMemberAdd, (member) => {
     milestones.onMemberAdd(member).catch((error) => console.error('Failed to check member milestones:', error));
+    joinPings.onMemberAdd(member).catch((error) => console.error('Failed to send join ping:', error));
     if (!member.user.bot) {
       levels.onMemberAdd(member).catch((error) => console.error('Failed to restore level roles:', error));
     }
