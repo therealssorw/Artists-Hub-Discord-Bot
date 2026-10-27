@@ -75,7 +75,7 @@ marked late.
 
 ## Join pings
 
-`/joinping set role:@Owner channel:#mod-chat` pings that role whenever someone joins (needs
+`/joinping set role:@Owner role2:@Mods channel:#mod-chat` pings those roles (up to five) whenever someone joins (needs
 Manage Server; the channel defaults to the one you run it in). The ping says who joined, which
 member number they are and when their account was made, with a ⚠️ for accounts under a week
 old. Bots are skipped. `/joinping status` and `/joinping disable` manage it per server. If the

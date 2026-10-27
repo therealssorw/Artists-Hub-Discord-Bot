@@ -14,10 +14,10 @@ const member = (ageMs, bot = false) => ({
 
 test('joinPingText pings the role and flags new accounts', () => {
   joinPingCommand.toJSON();
-  const old = joinPingText(member(400 * DAY), 'owner', now);
+  const old = joinPingText(member(400 * DAY), ['owner'], now);
   assert.match(old, /^<@&owner> 👋 <@42> \(\*\*sketchy_sam\*\*\) just joined, our 101st member!/);
   assert.doesNotMatch(old, /New account/);
-  assert.match(joinPingText(member(2 * DAY), 'owner', now), /⚠️ \*\*New account\*\* \(2 days old\)/);
+  assert.match(joinPingText(member(2 * DAY), ['owner'], now), /⚠️ \*\*New account\*\* \(2 days old\)/);
 });
 
 test('joins ping the configured role, but not for bots or when off', async () => {
@@ -35,5 +35,22 @@ test('joins ping the configured role, but not for bots or when off', async () =>
   await pings.onMemberAdd(member(DAY * 400));
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0].allowedMentions, { roles: ['owner'] });
+  store.close();
+});
+
+test('several roles can be pinged, and old single-role settings still work', async () => {
+  const store = new StatsStore(':memory:');
+  const sent = [];
+  const channel = { isTextBased: () => true, send: async (m) => sent.push(m) };
+  const pings = setupJoinPings({ channels: { fetch: async () => channel } }, store);
+
+  store.setMeta('joinping:g', JSON.stringify({ roleIds: ['owner', 'mods'], channelId: 'c' }));
+  await pings.onMemberAdd(member(DAY * 400));
+  assert.match(sent[0].content, /^<@&owner> <@&mods> 👋/);
+  assert.deepEqual(sent[0].allowedMentions, { roles: ['owner', 'mods'] });
+
+  store.setMeta('joinping:g', JSON.stringify({ roleId: 'owner', channelId: 'c' }));
+  await pings.onMemberAdd(member(DAY * 400));
+  assert.deepEqual(sent[1].allowedMentions, { roles: ['owner'] });
   store.close();
 });
