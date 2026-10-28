@@ -35,8 +35,8 @@ early bumps are left, then goes back to the normal **2 hours** once they're used
 - `/bumpreminder quiethours start:7am end:3pm` – change the weekday quiet hours, or `off:True`
   to allow pings any time
 
-If nobody bumps after a reminder, it pings again every **30 minutes** ("⏰ Still no bump!") until
-someone does. On **weekdays from 7 AM to 3 PM Eastern** it stays quiet: a reminder due then is
+If nobody bumps after a reminder, it pings again every **30 minutes** ("⏰ Still no bump!"), up to
+**4 pings** in all, then waits for the next bump. On **weekdays from 7 AM to 3 PM Eastern** it stays quiet: a reminder due then is
 held until 3 PM. Weekends and the rest of the day ping as normal.
 - `/bumpleaderboard [period] [page]` – who has bumped the most (all time, last 30 days or last 7
   days), with early Pro bumps counted separately. Anyone can use it. Running the backfill also

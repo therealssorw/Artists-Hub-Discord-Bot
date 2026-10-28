@@ -14,8 +14,8 @@
  * minutes; once they are used up it reminds at the normal 2 hours, or sooner
  * if an early bump recharges first.
  *
- * If nobody bumps after a reminder, it pings again every 30 minutes until
- * someone does. On weekdays it stays quiet during quiet hours (7 AM–3 PM
+ * If nobody bumps after a reminder, it pings again every 30 minutes, up to 4
+ * pings in all, until someone bumps and the count starts over. On weekdays it stays quiet during quiet hours (7 AM–3 PM
  * Eastern by default, changeable with /bumpreminder quiethours); a reminder
  * due then waits until quiet hours end. Weekends have no quiet hours.
  */
@@ -34,6 +34,8 @@ export const EARLY_BUMP_RECHARGE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_EARLY_BUMPS = 12;
 /** How long after an unanswered reminder to ping again. */
 export const BUMP_REPEAT_MS = 30 * 60 * 1000;
+/** Most pings per bump: the first reminder plus repeats. */
+export const MAX_BUMP_PINGS = 4;
 /** Default weekday quiet hours (no pings), in TIMEZONE. */
 export const DEFAULT_QUIET_HOURS = { start: '07:00', end: '15:00' };
 
@@ -327,9 +329,9 @@ export function setupBumpReminders(client, store) {
       console.error(`Failed to send bump reminder for guild ${guildId}:`, error);
       return;
     }
-    // Ping again if nobody bumps; a bump replaces this with the next real reminder.
+    // Ping again if nobody bumps, up to MAX_BUMP_PINGS in all; a bump starts over.
     store.setMeta(nagsKey(guildId), String(nags + 1));
-    schedule(guildId, reminder.channelId, now + BUMP_REPEAT_MS);
+    if (nags + 1 < MAX_BUMP_PINGS) schedule(guildId, reminder.channelId, now + BUMP_REPEAT_MS);
   }
 
   function schedule(guildId, channelId, dueAt) {
@@ -412,11 +414,11 @@ export function setupBumpReminders(client, store) {
 
   function describeQuiet(guildId) {
     const quiet = quietHours(guildId);
-    if (!quiet) return '🔔 No quiet hours: reminders can ping any time. Unanswered reminders repeat every 30 minutes.';
+    if (!quiet) return '🔔 No quiet hours: reminders can ping any time. Unanswered reminders repeat every 30 minutes, up to 4 pings in all.';
     return (
       `🤫 Quiet hours: weekdays ${formatReportTime(quiet.start)}–${formatReportTime(quiet.end)} (${config.timezone}). ` +
       'Reminders due then wait until quiet hours end; weekends ping any time. ' +
-      'Unanswered reminders repeat every 30 minutes.'
+      'Unanswered reminders repeat every 30 minutes, up to 4 pings in all.'
     );
   }
 

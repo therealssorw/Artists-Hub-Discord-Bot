@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   BUMP_COOLDOWN_MS,
   BUMP_REPEAT_MS,
+  MAX_BUMP_PINGS,
   DEFAULT_QUIET_HOURS,
   DISBOARD_BOT_ID,
   buildBumpLeaderboard,
@@ -185,7 +186,7 @@ test('quietUntil covers weekdays 7am–3pm Eastern only', () => {
   assert.equal(quietUntil(et(2026, 11, 1, 3), night, tz), null); // Sunday morning: Saturday night is not a weekday
 });
 
-test('unanswered reminders repeat every 30 minutes and stop when someone bumps', async (t) => {
+test('unanswered reminders repeat every 30 minutes, at most 4 pings, and start over on a bump', async (t) => {
   // Saturday, so quiet hours do not apply.
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: et(2026, 10, 31, 12) });
   const store = new StatsStore(':memory:');
@@ -219,12 +220,18 @@ test('unanswered reminders repeat every 30 minutes and stop when someone bumps',
   await advance(BUMP_REPEAT_MS);
   assert.equal(sent.length, 3);
 
+  await advance(BUMP_REPEAT_MS);
+  assert.equal(sent.length, MAX_BUMP_PINGS); // 4th and last ping
+  await advance(BUMP_REPEAT_MS * 4);
+  assert.equal(sent.length, MAX_BUMP_PINGS); // no more until someone bumps
+  assert.equal(store.getBumpReminder('g'), null);
+
   bump(); // someone bumps: the next ping is a fresh reminder 2 hours later
   await advance(BUMP_REPEAT_MS);
-  assert.equal(sent.length, 3);
+  assert.equal(sent.length, MAX_BUMP_PINGS);
   await advance(BUMP_COOLDOWN_MS - BUMP_REPEAT_MS);
-  assert.equal(sent.length, 4);
-  assert.doesNotMatch(sent[3], /Still no bump/);
+  assert.equal(sent.length, MAX_BUMP_PINGS + 1);
+  assert.doesNotMatch(sent.at(-1), /Still no bump/);
   bumps.cancel('g');
   store.close();
 });
